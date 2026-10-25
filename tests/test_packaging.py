@@ -70,6 +70,23 @@ class TestPyproject(unittest.TestCase):
             self.assertTrue((PROJECT_ROOT / ("%s.py" % name)).is_file(),
                             "py-module %r has no source file" % name)
 
+    def test_every_core_package_is_listed(self):
+        """An explicit `packages` list does not pull in subpackages.
+
+        setuptools takes the list literally: `comfyui_pulse_studio` ships that one
+        directory's modules and nothing beneath it. A subpackage left off the list
+        builds a wheel that works from a git checkout -- where the folder is simply
+        there -- and fails with ModuleNotFoundError for everyone who installs the
+        artefact.
+        """
+        tools = self.cfg.get("tool", {}).get("setuptools", {})
+        listed = set(tools.get("packages", []))
+        for init in sorted((PROJECT_ROOT / "comfyui_pulse_studio").rglob("__init__.py")):
+            name = ".".join(init.parent.relative_to(PROJECT_ROOT).parts)
+            self.assertIn(name, listed,
+                          "%s has an __init__.py but is not in pyproject's packages, "
+                          "so no wheel would contain it" % name)
+
     def test_publisher_and_repository_are_the_confirmed_ones(self):
         # Both were unverified placeholders carried over from the pre-fork
         # manifest until 2026-08-09. Pinning them keeps a stale value from

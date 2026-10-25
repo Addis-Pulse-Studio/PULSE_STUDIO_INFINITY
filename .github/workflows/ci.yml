@@ -145,15 +145,19 @@ jobs:
           python-version: "3.12"
 
       - name: The core imports with nothing installed
+        # walk_packages, not iter_modules: iter_modules lists one directory, so a
+        # subpackage was imported as a package and every module inside it was
+        # never imported at all -- the job stayed green over code it never saw.
         run: |
           python - <<'PY'
           import importlib, pkgutil, sys
           import comfyui_pulse_studio as pkg
-          for module in pkgutil.iter_modules(pkg.__path__):
-              importlib.import_module("%s.%s" % (pkg.__name__, module.name))
-          for banned in ("torch", "comfy", "comfy_extras", "folder_paths", "nodes"):
+          names = [m.name for m in pkgutil.walk_packages(pkg.__path__, pkg.__name__ + ".")]
+          for name in names:
+              importlib.import_module(name)
+          for banned in ("torch", "comfy", "comfy_extras", "folder_paths", "nodes", "yaml"):
               assert banned not in sys.modules, "%s reached the pure core" % banned
-          print("imported %d modules, no torch, no comfy" % len(list(pkgutil.iter_modules(pkg.__path__))))
+          print("imported %d modules, no torch, no comfy" % len(names))
           PY
 
   distribution:

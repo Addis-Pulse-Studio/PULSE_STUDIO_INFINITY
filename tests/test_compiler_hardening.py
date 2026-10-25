@@ -32,8 +32,14 @@ CORE = PROJECT_ROOT / "comfyui_pulse_studio"
 
 # The headless core must never reach for the runtime. This is what lets the whole
 # compiler be tested with no GPU, no ComfyUI, and nothing pip-installed.
+#
+# `yaml` is on the list although every ComfyUI install has PyYAML: the core is
+# imported by CI jobs that install nothing, and by `tools/pulse_desk.py` under
+# whatever bare Python a director agent runs in. Pulse Infinity's config file is
+# YAML, so the temptation is real -- it is parsed in the node layer, and the core
+# only ever receives the dict.
 FORBIDDEN = {"torch", "comfy", "comfy_extras", "folder_paths", "nodes",
-             "numpy", "PIL", "av", "server", "aiohttp"}
+             "numpy", "PIL", "av", "server", "aiohttp", "yaml"}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -93,12 +99,39 @@ class TestImportPurity(unittest.TestCase):
 
     def test_core_imports_cleanly_with_nothing_installed(self):
         """The end the purity rule exists for: importing every core module must
-        not require a single third-party package."""
+        not require a single third-party package.
+
+        Packages are imported too -- a subpackage's `__init__.py` runs on the way
+        to every module inside it, so it is as much a part of the core as they are.
+        """
         import importlib
         for path in self._core_files():
-            if path.name == "__init__.py":
-                continue
-            importlib.import_module("comfyui_pulse_studio.%s" % path.stem)
+            importlib.import_module(_module_name(path))
+
+    def test_module_names_follow_the_folder_a_file_is_in(self):
+        """`pulse_memory/schema.py` is `comfyui_pulse_studio.pulse_memory.schema`.
+
+        The name used to be built from `path.stem` alone, which was right only
+        while the core was flat. A module in a subpackage imported under the flat
+        name fails with ModuleNotFoundError -- or, worse, imports some other module
+        that happens to share its stem, and the file actually being checked is
+        never imported at all.
+        """
+        self.assertEqual(
+            _module_name(CORE / "pulse_memory" / "schema.py"),
+            "comfyui_pulse_studio.pulse_memory.schema")
+        self.assertEqual(_module_name(CORE / "pulse_memory" / "__init__.py"),
+                         "comfyui_pulse_studio.pulse_memory")
+        self.assertEqual(_module_name(CORE / "frames.py"), "comfyui_pulse_studio.frames")
+        self.assertEqual(_module_name(CORE / "__init__.py"), "comfyui_pulse_studio")
+
+
+def _module_name(path):
+    """The dotted import name of a core file, from where it sits on disk."""
+    parts = list(Path(path).relative_to(PROJECT_ROOT).with_suffix("").parts)
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
 
 
 # ══════════════════════════════════════════════════════════════════════════
