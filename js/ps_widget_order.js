@@ -309,6 +309,53 @@ const SPECS = {
       { name: "shift_audio", kind: "number" },
     ],
   },
+  // Pulse Studio Infinity's four nodes (infinity_nodes.py). New at 3.0.0, under
+  // the same contract: schema_version first, append only from here on.
+  PulseInfinityLoopController: {
+    "3.0.0": [
+      { name: "schema_version", kind: "string" },
+      { name: "session", kind: "string" },
+      { name: "story_goal", kind: "string" },
+      { name: "world", kind: "string" },
+      { name: "opening_beat", kind: "string" },
+      { name: "max_beats", kind: "number" },
+      { name: "director_backend", kind: "string" },
+      { name: "script", kind: "string" },
+      { name: "dialogue_mode", kind: "string" },
+      { name: "base_seed", kind: "number" },
+    ],
+  },
+  PulseDynamicShot: {
+    "3.0.0": [
+      { name: "schema_version", kind: "string" },
+      { name: "style_suffix", kind: "string" },
+      { name: "dialogue_language", kind: "string" },
+      { name: "continuity", kind: "string" },
+      { name: "carry", kind: "string" },
+      { name: "anchors_in_prompt", kind: "boolean" },
+    ],
+  },
+  PulseInfinityRender: {
+    "3.0.0": [
+      { name: "schema_version", kind: "string" },
+      { name: "cache_mode", kind: "string" },
+      { name: "low_memory", kind: "boolean" },
+      { name: "seam_treatment", kind: "string" },
+      { name: "audio_mode", kind: "string" },
+      { name: "remix_strength", kind: "number" },
+      { name: "ref_image_fit", kind: "string" },
+      { name: "reference_audio", kind: "string" },
+    ],
+  },
+  PulseObserver: {
+    "3.0.0": [
+      { name: "schema_version", kind: "string" },
+      { name: "evidence_frames", kind: "number" },
+      { name: "contact_sheet", kind: "boolean" },
+      { name: "free_vram_before_director", kind: "string" },
+      { name: "seam_treatment", kind: "string" },
+    ],
+  },
 };
 
 /** Names only, in the shape spec §3.3 describes: WIDGET_NAMES[class][version]. */

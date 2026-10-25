@@ -9,6 +9,20 @@ log = logging.getLogger(__name__)
 
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS  # noqa: E402
 
+# Pulse Studio Infinity: the closed-loop nodes live in their own module, so
+# nodes.py keeps the eleven classes its tests count. Merged here, once; a class
+# id present in both would be a bug, and is refused rather than shadowed.
+from .infinity_nodes import (  # noqa: E402
+    NODE_CLASS_MAPPINGS as _INFINITY_CLASSES,
+    NODE_DISPLAY_NAME_MAPPINGS as _INFINITY_NAMES,
+)
+
+_clash = set(NODE_CLASS_MAPPINGS) & set(_INFINITY_CLASSES)
+if _clash:  # pragma: no cover - a packaging mistake, caught at import
+    raise ImportError("node ids defined twice: %s" % ", ".join(sorted(_clash)))
+NODE_CLASS_MAPPINGS = dict(NODE_CLASS_MAPPINGS, **_INFINITY_CLASSES)
+NODE_DISPLAY_NAME_MAPPINGS = dict(NODE_DISPLAY_NAME_MAPPINGS, **_INFINITY_NAMES)
+
 WEB_DIRECTORY = "./js"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
@@ -161,3 +175,51 @@ try:
 except Exception as exc:  # pragma: no cover - ComfyUI server not present
     log.info("[PulseStudio] Asset Bin routes not registered (%s); the node still works "
              "with a raw JSON timeline_data widget.", exc)
+
+
+# ── Pulse Infinity control routes ───────────────────────────────────────────
+# The Loop node's context menu (js/ps_infinity.js) pauses, resumes, stops,
+# rerolls and replans a film through these. Inbound only, like the bin's: the
+# frontend asks ComfyUI's own server, which writes the session folder. The same
+# actions are available to a director agent through tools/pulse_desk.py.
+
+try:
+    from aiohttp import web
+    from server import PromptServer
+
+    from .comfyui_pulse_studio.infinity_session import CONTROL_ACTIONS, SessionError
+    from .infinity_nodes import _session, load_config
+
+    @PromptServer.instance.routes.post("/pulse_infinity/control")
+    async def _infinity_control(request):
+        try:
+            data = await request.json()
+            action = data.get("action")
+            if action not in CONTROL_ACTIONS:
+                return web.json_response({"status": "error", "message":
+                                          "action must be one of %s" % ", ".join(CONTROL_ACTIONS)},
+                                         status=400)
+            film = _session(str(data.get("session") or ""), load_config())
+            message = film.control(action, note=str(data.get("note") or ""))
+            return web.json_response({"status": "ok", "message": message,
+                                      "session": film.describe()})
+        except SessionError as exc:
+            return web.json_response({"status": "error", "message": str(exc)}, status=409)
+        except Exception as exc:
+            log.warning("[PulseStudio] infinity control failed: %s", exc)
+            return web.json_response({"status": "error", "message": str(exc)}, status=400)
+
+    @PromptServer.instance.routes.post("/pulse_infinity/status")
+    async def _infinity_status(request):
+        try:
+            data = await request.json()
+            film = _session(str(data.get("session") or ""), load_config())
+            return web.json_response({"status": "ok", "session": film.describe(),
+                                      "state": film.status, "beat": film.state["beat"],
+                                      "revision": film.revision_token})
+        except Exception as exc:
+            return web.json_response({"status": "error", "message": str(exc)}, status=400)
+
+except Exception as exc:  # pragma: no cover - ComfyUI server not present
+    log.info("[PulseStudio] Pulse Infinity control routes not registered (%s); queue "
+             "the graph to advance a film, and use tools/pulse_desk.py to control it.", exc)

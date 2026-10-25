@@ -483,24 +483,33 @@ class InfinitySession:
     # ── commit ──────────────────────────────────────────────────────────────
 
     def commit_rendered(self, director: ExchangeDirector, evidence: EvidencePack,
-                        render: dict) -> BeatOutcome:
+                        render: dict, beat: Optional[int] = None,
+                        attempt: Optional[int] = None) -> BeatOutcome:
         """The beat just rendered: show it to the director, commit, plan the next.
 
-        `render` is the record Pulse Infinity Render wrote (record_render). Doing
-        this twice for one render returns the first outcome unchanged.
+        `render` is the record Pulse Infinity Render wrote (record_render), and
+        `beat` / `attempt` say which render it is -- taken from the render, never
+        from the session's pending beat, which has already moved on once this beat
+        is committed. Doing this twice for one render returns the first outcome
+        unchanged; a render the session has moved past is refused.
         """
-        beat = self.pending_beat
-        attempt = self.attempt
+        beat = int(beat if beat is not None else render.get("beat") or self.pending_beat)
+        attempt = int(attempt if attempt is not None else render.get("attempt") or self.attempt)
         key = str(render.get("last_key") or "")
         done = self.state["beats"].get(str(beat))
-        if done and done.get("last_key") == key and done.get("attempt") == attempt:
+        if done and done.get("last_key") == key and int(done.get("attempt") or 0) == attempt:
             return BeatOutcome(beat, next_plan=self._pending_plan_object(),
                                complete=self.status == STATUS_COMPLETE,
                                notes=["beat %d was already committed; nothing repeated" % beat],
                                replayed=True)
         if int(self.state["beat"]) >= beat:
-            raise SessionError("beat %d is already committed; reroll or replan it to render "
-                               "it again" % beat)
+            raise SessionError("beat %d is already committed from another render; reroll or "
+                               "replan it to render it again" % beat)
+        if beat != self.pending_beat or attempt != self.attempt:
+            raise SessionError(
+                "this render is beat %d attempt %d, but the session is waiting for beat %d "
+                "attempt %d -- it was undone or overtaken; queue again to render the "
+                "current beat" % (beat, attempt, self.pending_beat, self.attempt))
 
         last_plan = self._pending_plan_object()
         if last_plan is None:
@@ -566,9 +575,12 @@ class InfinitySession:
         self.state["max_beats"] = max(0, int(max_beats or 0))
 
     def describe(self) -> str:
-        return ("session %s (%s): beat %d committed, beat %d next (attempt %d), %s"
-                % (self.name, self.relative(self.root) or ".", int(self.state["beat"]),
-                   self.pending_beat, self.attempt, self.status))
+        where = "%s/%s" % (self.sessions_dir, self.name)
+        if self.status == STATUS_COMPLETE:
+            return "session %s: complete after beat %d" % (where, int(self.state["beat"]))
+        return ("session %s: beat %d committed, beat %d next (attempt %d), %s"
+                % (where, int(self.state["beat"]), self.pending_beat, self.attempt,
+                   self.status))
 
 
 # Kept for callers that only import the session module.

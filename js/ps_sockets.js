@@ -48,6 +48,11 @@ export const GROUPS = {
   PulseShot: [
     { prefix: "refs.ref_image_", max: 4 },
   ],
+  // Pulse Infinity's Loop node takes the same cast as the slate, so the director
+  // knows who it may cite and whose voice a line is spoken in.
+  PulseInfinityLoopController: [
+    { prefix: "cast.cast_", max: 6 },
+  ],
 };
 
 /** Sockets that are not part of any growing group keep their place at the front. */

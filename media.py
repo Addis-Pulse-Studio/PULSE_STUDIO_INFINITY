@@ -1231,3 +1231,75 @@ def paste_segment(images, corrected, segment, feather=0):
     region = out[indices, y0:y1, x0:x1, :]
     out[indices, y0:y1, x0:x1, :] = region + mask * (corrected.to(images.device) - region)
     return out, notes
+
+
+# ── evidence for a director (Pulse Infinity) ────────────────────────────────
+
+def sample_frames(paths, indices):
+    """The frames at `indices`, counted across segment files played end to end.
+
+    A director needs five stills of a beat, not 124 decoded frames: this streams
+    each file and keeps only the frames asked for, so a 15-second beat costs five
+    frames of RAM rather than four gigabytes of float32. Returns an IMAGE tensor
+    [N, H, W, 3] in index order, or None when nothing could be read.
+    """
+    import av
+
+    wanted = sorted({int(i) for i in indices if int(i) >= 0})
+    found = {}
+    offset = 0
+    for path in paths or []:
+        if not wanted or offset > wanted[-1]:
+            break
+        if not path or not os.path.exists(path):
+            continue
+        count = 0
+        try:
+            with av.open(path) as container:
+                if not container.streams.video:
+                    continue
+                for count, frame in enumerate(container.decode(container.streams.video[0]),
+                                              start=1):
+                    index = offset + count - 1
+                    if index in wanted:
+                        found[index] = frame.to_ndarray(format="rgb24")
+                    if index >= wanted[-1]:
+                        break
+        except Exception as exc:  # pragma: no cover - unreadable segment
+            log.warning("[PulseStudio] could not sample frames from %s: %s", path, exc)
+        offset += count
+    frames = [found[i] for i in wanted if i in found]
+    if not frames:
+        return None
+    return torch.from_numpy(np.stack(frames).astype(np.float32) / 255.0)
+
+
+def contact_sheet(images, columns=3, cell_width=448, labels=None):
+    """Stills laid out in a grid, each captioned -- one image showing the motion.
+
+    A director reading one picture sees the beat's whole arc, which is cheaper for
+    it than five reads and harder to misjudge than the last frame alone. Captions
+    use PIL's built-in bitmap font: no font file ships and none is fetched.
+    """
+    from PIL import Image, ImageDraw
+
+    if images is None or images.shape[0] == 0:
+        return None
+    count = images.shape[0]
+    columns = max(1, min(int(columns), count))
+    rows = (count + columns - 1) // columns
+    height, width = int(images.shape[1]), int(images.shape[2])
+    cell_height = max(1, int(round(height * cell_width / float(width))))
+    sheet = Image.new("RGB", (columns * cell_width, rows * cell_height), (16, 16, 16))
+    draw = ImageDraw.Draw(sheet)
+    for i in range(count):
+        array = (images[i].detach().to("cpu").clamp(0, 1) * 255).round().to(torch.uint8).numpy()
+        tile = Image.fromarray(array, mode="RGB").resize((cell_width, cell_height),
+                                                          Image.LANCZOS)
+        x, y = (i % columns) * cell_width, (i // columns) * cell_height
+        sheet.paste(tile, (x, y))
+        caption = (labels[i] if labels and i < len(labels) else "%d" % (i + 1))
+        draw.rectangle([x, y, x + 8 + 6 * len(caption), y + 14], fill=(0, 0, 0))
+        draw.text((x + 4, y + 2), caption, fill=(255, 255, 255))
+    array = np.asarray(sheet, dtype=np.float32) / 255.0
+    return torch.from_numpy(array).unsqueeze(0)

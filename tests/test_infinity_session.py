@@ -164,19 +164,47 @@ class TestTheLoop(SessionCase):
 
 class TestNothingHappensTwice(SessionCase):
     def test_committing_the_same_render_again_changes_nothing(self):
-        """ComfyUI's cache may evict the Observer and run it again in the same queue."""
+        """ComfyUI's cache may evict the Observer and run it again in the same queue.
+
+        By then the session has moved on to the next beat -- which is exactly what
+        once made the second run commit beat 1's render as beat 2. The render says
+        which beat it is; the session's pending beat does not.
+        """
         session = self.session()
         director = self.director(session)
         session.plan_for_pending(director)
         record, evidence = self.render(session)
-        session.commit_rendered(director, evidence, record)
+        session.commit_rendered(director, evidence, record, beat=1, attempt=1)
         calls, history = _Counting.calls, list(session.memory.action_history)
-        session.state["pending_beat"], session.state["attempt"] = 1, 1  # the evicted re-run
-        again = session.commit_rendered(director, evidence, record)
-        self.assertTrue(again.replayed)
+        for again_session in (session, InfinitySession(self.output, "Clock Garden!", self.config)):
+            again = again_session.commit_rendered(director, evidence, record, beat=1, attempt=1)
+            self.assertTrue(again.replayed)
+            self.assertEqual(again_session.state["beat"], 1)
+            self.assertEqual(again_session.pending_beat, 2)
+            self.assertEqual(again_session.memory.action_history, history)
+            self.assertEqual(len(again_session.state["reel"]), 1)
         self.assertEqual(_Counting.calls, calls)
-        self.assertEqual(session.memory.action_history, history)
-        self.assertEqual(len(session.state["reel"]), 1)
+
+    def test_the_render_record_says_which_beat_it_is(self):
+        """record_render stamps beat and attempt into the record on disk."""
+        session = self.session()
+        director = self.director(session)
+        session.plan_for_pending(director)
+        self.render(session)
+        on_disk = session.render_record(1, 1)
+        self.assertEqual((on_disk["beat"], on_disk["attempt"]), (1, 1))
+        outcome = session.commit_rendered(director, EvidencePack(session.root, 1), on_disk)
+        self.assertEqual(outcome.beat, 1)
+
+    def test_a_render_the_session_has_moved_past_is_refused(self):
+        session = self.session()
+        director = self.director(session)
+        self.beat(session, director)
+        session.plan_for_pending(director)
+        stale, evidence = self.render(session)
+        session.control("replan")
+        with self.assertRaises(SessionError):
+            session.commit_rendered(director, evidence, stale, beat=2, attempt=1)
 
     def test_a_crash_after_the_director_answered_replays_the_answer(self):
         session = self.session()
@@ -215,10 +243,9 @@ class TestNothingHappensTwice(SessionCase):
         session = self.session()
         director = self.director(session)
         self.beat(session, director)
-        session.state["pending_beat"] = 1
         record, evidence = self.render(session, key="ff" * 32)
         with self.assertRaises(SessionError):
-            session.commit_rendered(director, evidence, record)
+            session.commit_rendered(director, evidence, record, beat=1, attempt=1)
 
 
 class TestUndo(SessionCase):

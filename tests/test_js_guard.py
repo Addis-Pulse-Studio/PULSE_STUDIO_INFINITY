@@ -30,6 +30,11 @@ JS_TESTS = PROJECT_ROOT / "tests" / "js"
 PANEL = JS_DIR / "pulse_slate.js"
 ORDER_JS = JS_DIR / "ps_widget_order.js"
 NODES_PY = PROJECT_ROOT / "nodes.py"
+# Pulse Infinity's nodes live in their own module (so nodes.py keeps the eleven
+# classes test_patches counts) under the same slot contract; every AST helper
+# below reads both files.
+INFINITY_PY = PROJECT_ROOT / "infinity_nodes.py"
+NODE_SOURCES = (NODES_PY, INFINITY_PY)
 CONSTANTS_PY = PROJECT_ROOT / "comfyui_pulse_studio" / "constants.py"
 
 NODE = shutil.which("node")
@@ -45,12 +50,26 @@ CONNECTION_TYPES = {"MODEL", "CLIP", "VAE", "CONDITIONING", "LATENT", "IMAGE", "
                     # PULSE_RECIPE is a branch's sampling settings, PULSE_CAST one
                     # character: a face, its description and its voice.
                     "PULSE_TIMELINE", "PULSE_SHOT", "PULSE_VOICE", "PULSE_LIPSYNC_SEGMENT",
-                    "PULSE_RECIPE", "PULSE_CAST", "VIDEO"}
+                    "PULSE_RECIPE", "PULSE_CAST", "VIDEO",
+                    # Pulse Infinity: the session handle from the Loop node, and one
+                    # rendered beat from Pulse Infinity Render to the Observer.
+                    "PULSE_INFINITY", "PULSE_BEAT"}
 
 # Every node in the pack is under the slot contract, so every node is compared.
 NODE_CLASSES = ("PulseSlate", "PulseShot", "PulseVoice", "PulseRender", "PulseBench",
                 "PulseRetake", "PulseStill", "PulseLipSyncSegment", "PulseLipSyncPaste",
-                "PulseRecipe", "PulseCharacter")
+                "PulseRecipe", "PulseCharacter",
+                "PulseInfinityLoopController", "PulseDynamicShot", "PulseInfinityRender",
+                "PulseObserver")
+
+
+def _class_nodes():
+    """Every ClassDef in the node modules, read with ast (both import torch)."""
+    for source in NODE_SOURCES:
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                yield node
 
 # Dot-namespaced growing socket groups (§4). They are declared in Python by a
 # loop rather than as dict literals, so they are deliberately invisible to the
@@ -65,9 +84,8 @@ def _input_types(class_name):
     nodes.py imports torch, so it is read with ast rather than imported -- which
     keeps this test runnable in the same bare environment as the rest.
     """
-    tree = ast.parse(NODES_PY.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef) or node.name != class_name:
+    for node in _class_nodes():
+        if node.name != class_name:
             continue
         for fn in node.body:
             if not isinstance(fn, ast.FunctionDef) or fn.name != "INPUT_TYPES":
@@ -86,9 +104,8 @@ def _local_dict(class_name, variable):
     it yields the fixed sockets, whose ORDER is the thing under contract, and
     leaves the generated ones to be checked by count.
     """
-    tree = ast.parse(NODES_PY.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef) or node.name != class_name:
+    for node in _class_nodes():
+        if node.name != class_name:
             continue
         for fn in node.body:
             if not isinstance(fn, ast.FunctionDef) or fn.name != "INPUT_TYPES":
@@ -147,9 +164,8 @@ def declared_inputs(class_name="PulseSlate"):
 
 def _class_tuple(class_name, attribute):
     """A class-level tuple constant such as RETURN_NAMES, as a list of strings."""
-    tree = ast.parse(NODES_PY.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef) or node.name != class_name:
+    for node in _class_nodes():
+        if node.name != class_name:
             continue
         for stmt in node.body:
             if not isinstance(stmt, ast.Assign):
@@ -197,6 +213,7 @@ class TestJavaScriptSuites(unittest.TestCase):
         self.assertIn("test_widget_guard.mjs", found)
         self.assertIn("test_widget_order.mjs", found)
         self.assertIn("test_sockets.mjs", found)
+        self.assertIn("test_infinity.mjs", found)
 
     @unittest.skipIf(NODE is None, "node is not installed")
     def test_every_js_suite_passes(self):
@@ -355,6 +372,12 @@ class TestInputAndOutputOrderIsFrozen(unittest.TestCase):
         "PulseLipSyncPaste": ["images", "corrected_images", "segment"],
         "PulseRecipe": [],
         "PulseCharacter": ["face", "body", "voice"],
+        # The Loop node's cast sockets are a growing group, checked by size.
+        "PulseInfinityLoopController": [],
+        "PulseDynamicShot": ["infinity", "dialogue_audio"],
+        "PulseInfinityRender": ["timeline", "infinity", "model", "vae", "audio_vae",
+                                "model_fl2va"],
+        "PulseObserver": ["beat", "infinity", "images", "audio"],
     }
 
     EXPECTED_OUTPUTS = {
@@ -378,6 +401,13 @@ class TestInputAndOutputOrderIsFrozen(unittest.TestCase):
         "PulseLipSyncPaste": (["IMAGE", "STRING"], ["images", "report"]),
         "PulseRecipe": (["PULSE_RECIPE"], ["recipe"]),
         "PulseCharacter": (["PULSE_CAST"], ["character"]),
+        "PulseInfinityLoopController": (
+            ["PULSE_INFINITY", "INT", "STRING", "AUDIO", "STRING"],
+            ["infinity", "seed", "tts_text", "speaker_voice", "status"]),
+        "PulseDynamicShot": (["PULSE_SHOT", "STRING"], ["shot", "visual"]),
+        "PulseInfinityRender": (["VIDEO", "IMAGE", "AUDIO", "PULSE_BEAT", "STRING"],
+                                ["video", "frames", "audio", "beat", "report"]),
+        "PulseObserver": (["STRING", "IMAGE", "STRING"], ["report", "evidence", "next_beat"]),
     }
 
     #: §4. Both languages must agree on how many sockets each group has, or the
@@ -387,6 +417,7 @@ class TestInputAndOutputOrderIsFrozen(unittest.TestCase):
         "PulseSlate": {"refs.ref_image_": 8, "shots.shot_": 24,
                        "voices.voice_": 3, "cast.cast_": 6},
         "PulseShot": {"refs.ref_image_": 4},
+        "PulseInfinityLoopController": {"cast.cast_": 6},
     }
 
     def test_dynamic_group_sizes_match_the_frontend(self):

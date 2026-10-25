@@ -32,7 +32,7 @@ Repository = "https://github.com/Addis-Pulse-Studio/comfyui-pulse-studio"
 # Spelled out rather than discovered, for the reason in [build-system] above.
 packages = ["comfyui_pulse_studio", "comfyui_pulse_studio.pulse_memory",
             "comfyui_pulse_studio.pulse_director"]
-py-modules = ["nodes", "media", "render"]
+py-modules = ["nodes", "media", "render", "infinity_nodes"]
 
 [tool.comfy]
 # Confirmed 2026-08-09 against the publisher at

@@ -335,17 +335,21 @@ class TestTheWarningIsActuallyWired(unittest.TestCase):
         output is wired to anything (§8).
         """
         source = NODES_PY.read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        declared = 0
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ClassDef) or not node.name.startswith("Pulse"):
-                continue
-            body = ast.get_source_segment(source, node) or ""
-            self.assertIn('"hidden": HIDDEN_INPUTS', body,
-                          "%s declares no hidden inputs, so a warning raised by it "
-                          "has no node to attach to" % node.name)
-            declared += 1
-        self.assertEqual(declared, 11)
+        counts = {}
+        # Pulse Infinity's four nodes are in infinity_nodes.py, under the same rule.
+        for path in (NODES_PY, NODES_PY.parent / "infinity_nodes.py"):
+            text = path.read_text(encoding="utf-8")
+            declared = 0
+            for node in ast.walk(ast.parse(text)):
+                if not isinstance(node, ast.ClassDef) or not node.name.startswith("Pulse"):
+                    continue
+                body = ast.get_source_segment(text, node) or ""
+                self.assertIn('"hidden": HIDDEN_INPUTS', body,
+                              "%s declares no hidden inputs, so a warning raised by it "
+                              "has no node to attach to" % node.name)
+                declared += 1
+            counts[path.name] = declared
+        self.assertEqual(counts, {"nodes.py": 11, "infinity_nodes.py": 4})
         self.assertIn('HIDDEN_INPUTS = {"unique_id": "UNIQUE_ID"}', source)
         self.assertIn('HIDDEN_INPUTS_WITH_PROMPT = {"unique_id": "UNIQUE_ID", '
                       '"prompt": "PROMPT"}', source)
