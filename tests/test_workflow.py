@@ -45,7 +45,12 @@ SINGLE = WORKFLOW_DIR / "PulseSlate_Single.json"
 # the structural battery reads, and a graph that opens as a disconnected mess is
 # worse than one that fails to load.
 VOICE = WORKFLOW_DIR / "PulseSlate_Voice.json"
-SHIPPED_GRAPHS = (LONG_FORM, CAST, RETAKE, SINGLE, VOICE)
+# The sixth: Pulse Studio Infinity's closed loop on the scripted director, stock
+# loaders only, so it opens clean on any install. Its HyperFlow + Fish Audio S2
+# sibling needs two third-party packs and stays out of the tuple, like
+# PulseSlate_Dialogue_HyperFlow.json. Built by tools/build_infinity_workflows.py.
+INFINITY_SCRIPTED = WORKFLOW_DIR / "PulseInfinity_Scripted.json"
+SHIPPED_GRAPHS = (LONG_FORM, CAST, RETAKE, SINGLE, VOICE, INFINITY_SCRIPTED)
 ASSET_DIR = WORKFLOW_DIR / "assets"
 NODES_PY = PROJECT_ROOT / "nodes.py"
 
@@ -744,7 +749,9 @@ class TestShippedGraphsCarryEveryWidget(unittest.TestCase):
     def _tables(self):
         from tests.test_js_guard import js_widget_names
         return {name: js_widget_names(name)
-                for name in ("PulseSlate", "PulseShot", "PulseRender", "PulseBench")}
+                for name in ("PulseSlate", "PulseShot", "PulseRender", "PulseBench",
+                             "PulseInfinityLoopController", "PulseDynamicShot",
+                             "PulseInfinityRender", "PulseObserver")}
 
     def test_every_pulse_node_stores_a_full_widget_array(self):
         tables = self._tables()
