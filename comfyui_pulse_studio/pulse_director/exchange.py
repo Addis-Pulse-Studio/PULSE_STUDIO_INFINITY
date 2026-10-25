@@ -114,16 +114,23 @@ def validate_answer(raw: Any, request: TurnRequest, memory: SceneMemory,
 
 def run_turn(director: "ExchangeDirector", request: TurnRequest, memory: SceneMemory,
              last_plan: Optional[DirectedShotPlan] = None, max_attempts: int = 3,
-             scene_budget: int = 8, on_attempt: Optional[Callable[..., None]] = None
-             ) -> tuple[TurnResponse, list[str]]:
+             scene_budget: int = 8, on_attempt: Optional[Callable[..., None]] = None,
+             accept_invalid: bool = False) -> tuple[TurnResponse, list[str]]:
     """Ask, judge, and ask again with the reasons -- up to `max_attempts` times.
 
     Returns (turn, notes). Raises DirectorRejected when every attempt broke the
-    contract, carrying the last attempt's problems. `on_attempt(request, raw,
-    turn, problems)` sees every attempt, accepted or not -- the session journals
-    them through it.
+    contract, carrying the last attempt's problems -- unless `accept_invalid`
+    (config `on_invalid: accept`) and the last answer at least parsed, in which
+    case it is returned with its problems in the notes: a story that keeps going
+    on a flawed beat, said so, rather than one that stops. An answer that does
+    not parse is never accepted; there is nothing in it to render.
+
+    `on_attempt(request, raw, turn, problems)` sees every attempt, accepted or
+    not -- the session journals them through it.
     """
     problems: list[str] = []
+    turn = None
+    notes: list[str] = []
     first = request.attempt
     for attempt in range(first, first + max(1, int(max_attempts))):
         request.attempt = attempt
@@ -132,9 +139,13 @@ def run_turn(director: "ExchangeDirector", request: TurnRequest, memory: SceneMe
         turn, problems, notes = validate_answer(raw, request, memory, last_plan, scene_budget)
         if on_attempt is not None:
             on_attempt(request, raw, turn, problems)
-        director.settle(request, accepted=not problems and turn is not None, problems=problems)
+        accepted = turn is not None and (not problems or (
+            accept_invalid and attempt == first + max(1, int(max_attempts)) - 1))
+        director.settle(request, accepted=accepted, problems=problems)
         if turn is not None and not problems:
             return turn, notes
+        if accepted:
+            return turn, notes + ["accepted despite: " + p for p in problems]
     raise DirectorRejected(
         "%s broke the contract on %d attempt(s) at %s; the last answer's problems: %s"
         % (director.name, max(1, int(max_attempts)), request.turn_id, "; ".join(problems)),
@@ -252,6 +263,8 @@ class ExchangeDirector(BaseDirector):
         super().__init__(merged, session_root, should_cancel)
         self.session = session or os.path.basename(os.path.normpath(session_root or "")) or ""
         self.transport = self._make_transport(runner, on_status)
+        #: Notes from the last accepted turn (grid snaps, corrected indices).
+        self.last_notes: list[str] = []
 
     def _make_transport(self, runner, on_status):
         kind = self.settings["transport"]
@@ -299,10 +312,11 @@ class ExchangeDirector(BaseDirector):
 
     def step(self, request: TurnRequest, memory: SceneMemory,
              last_plan: Optional[DirectedShotPlan] = None, max_attempts: int = 3,
-             scene_budget: int = 8, on_attempt: Optional[Callable[..., None]] = None
-             ) -> TurnResponse:
-        turn, _ = run_turn(self, request, memory, last_plan, max_attempts, scene_budget,
-                           on_attempt)
+             scene_budget: int = 8, on_attempt: Optional[Callable[..., None]] = None,
+             accept_invalid: bool = False) -> TurnResponse:
+        turn, notes = run_turn(self, request, memory, last_plan, max_attempts, scene_budget,
+                               on_attempt, accept_invalid)
+        self.last_notes = notes
         return turn
 
     # ── the spec's interface, on the same round trip ────────────────────────

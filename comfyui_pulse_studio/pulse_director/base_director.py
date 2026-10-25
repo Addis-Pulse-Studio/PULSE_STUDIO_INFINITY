@@ -183,14 +183,14 @@ class TurnRequest:
 
     __slots__ = ("kind", "session", "beat", "attempt", "story_goal", "memory",
                  "memory_text", "last_plan", "evidence", "constraints", "rejection",
-                 "cast", "pacing", "guidance")
+                 "cast", "pacing", "guidance", "epoch")
 
     def __init__(self, kind: str, session: str, beat: int, attempt: int = 1,
                  story_goal: str = "", memory: Optional[dict] = None, memory_text: str = "",
                  last_plan: Optional[dict] = None, evidence: Optional[EvidencePack] = None,
                  constraints: Optional[dict] = None, rejection: Optional[list[str]] = None,
                  cast: Optional[list[dict]] = None, pacing: Optional[dict] = None,
-                 guidance: str = "") -> None:
+                 guidance: str = "", epoch: int = 0) -> None:
         if kind not in KINDS:
             raise ValueError("turn kind must be one of %r, got %r" % (KINDS, kind))
         self.kind = kind
@@ -207,9 +207,15 @@ class TurnRequest:
         self.cast = list(cast or [])
         self.pacing = dict(pacing or {})
         self.guidance = guidance
+        self.epoch = int(epoch)
 
     @property
     def turn_id(self) -> str:
+        """`b0004-turn-a1`. After a reroll or replan the session's epoch moves on,
+        and so does the name (`b0004-turn-e1-a1`): a question asked again after an
+        undo is a new question, never the old one's answer."""
+        if self.epoch:
+            return "b%04d-%s-e%d-a%d" % (self.beat, self.kind, self.epoch, self.attempt)
         return "b%04d-%s-a%d" % (self.beat, self.kind, self.attempt)
 
     @property
@@ -235,7 +241,7 @@ class TurnRequest:
                 "evidence": self.evidence.to_dict() if self.evidence is not None else None,
                 "constraints": self.constraints, "rejection": list(self.rejection),
                 "cast": list(self.cast), "pacing": dict(self.pacing),
-                "guidance": self.guidance}
+                "guidance": self.guidance, "epoch": self.epoch}
 
     @classmethod
     def from_dict(cls, root: str, data: dict) -> "TurnRequest":
@@ -245,7 +251,7 @@ class TurnRequest:
                    data.get("memory"), data.get("memory_text", ""), data.get("last_plan"),
                    EvidencePack.from_dict(root, evidence) if evidence else None,
                    data.get("constraints"), data.get("rejection"), data.get("cast"),
-                   data.get("pacing"), data.get("guidance", ""))
+                   data.get("pacing"), data.get("guidance", ""), int(data.get("epoch") or 0))
 
 
 def default_constraints(memory: SceneMemory, scene_budget: int = 8,
