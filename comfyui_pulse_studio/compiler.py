@@ -729,12 +729,24 @@ def compile_timeline(timeline, window_frames=None, policy="balanced",
 
     compiled = []
     for i, (frame_count, (start, end)) in enumerate(zip(windows, bounds)):
-        branch = timeline.branch if i == 0 else timeline.continuation_branch
+        branch = timeline.continuation_branch if _continues(timeline, i) else timeline.branch
         compiled.append(_compile_window(
             timeline, i, len(windows), branch, frame_count, start, end, carry,
             speaker_ids=speaker_ids))
 
     return CompiledPlan(compiled, diagnostics, problems)
+
+
+def _continues(timeline, index):
+    """Does window `index` pick up where something already rendered left off?
+
+    Every window after the first does -- it continues the window before it, which
+    is what the carry-over references, the fl2va first-frame lock, the guide pin
+    and the "continue the ongoing action" lines all exist to say. They used to
+    test `index > 0` each on their own; asking one question in one place is what
+    lets a window 0 continue something too, without six sites to keep in step.
+    """
+    return index > 0
 
 
 def _window_bin(timeline, index, branch, carry, shots=(), window=None):
@@ -781,7 +793,7 @@ def _window_bin(timeline, index, branch, carry, shots=(), window=None):
 
     images, videos, audios = [], [], []
     guided = bool(getattr(timeline, "guided_carry", False))
-    if index > 0:
+    if _continues(timeline, index):
         # A guided window pins the frame itself; carrying it again as <Picture 1>
         # would spend a picture slot on a frame the model already has.
         if carry.wants_image and not guided:
@@ -1175,7 +1187,8 @@ def _compile_window(timeline, index, total, branch, frame_count, start, end, car
 
     # ── anchors (fl2va; and a guide on ref_guided_carry) ───────────────────
     anchors = {}
-    if branch == BRANCH_REF2VA and index > 0 and getattr(timeline, "guided_carry", False):
+    if (branch == BRANCH_REF2VA and _continues(timeline, index)
+            and getattr(timeline, "guided_carry", False)):
         anchors[GUIDE_FIRST] = CARRY_IMAGE_ID
     if branch == BRANCH_FL2VA:
         # §11 keyframe_pairs. Per-shot anchors, when the node layer supplied them,
@@ -1193,7 +1206,7 @@ def _compile_window(timeline, index, total, branch, frame_count, start, end, car
 
         if explicit_first:
             anchors["first_frame"] = explicit_first
-        elif index == 0:
+        elif not _continues(timeline, index):
             if timeline.first_frame:
                 anchors["first_frame"] = timeline.first_frame
         else:
@@ -1866,7 +1879,7 @@ def _assemble_base_prompt(timeline, index, total, bin_, tag_map, subject_lines,
             end_ts = format_timestamp(frames_to_seconds(frame_count - 1, timeline.fps))
             parts.append("`<Picture %d>` aligns with the %s mark" % (picture_n, end_ts))
         line = "How the reference pictures align with the target video — " + "; ".join(parts) + "."
-        if index > 0:
+        if _continues(timeline, index):
             line += (" Continue the ongoing action naturally from this pose and framing — "
                      "no restart, no new take.")
         lines.append(line)
@@ -1891,7 +1904,7 @@ def _assemble_base_prompt(timeline, index, total, bin_, tag_map, subject_lines,
                 "movements match it precisely, in time with it. No other voices."
                 % (_heard_in(heard) if heard else " in this window"))
         soundscape = (soundscape + " " + note) if soundscape else note
-    elif index > 0:
+    elif _continues(timeline, index):
         # This branch encodes no reference audio at all, so the window has no
         # sonic grounding. Left unconstrained, H3 tends to invent vocalisation.
         # Only say so when the shots do not themselves call for speech.
