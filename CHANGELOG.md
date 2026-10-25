@@ -4,6 +4,38 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### A film can open where a previous run left off
+
+Between the windows of one render, window 2 has always continued window 1: the
+last frame carried in as `<Picture 1>`, the audio tail as `<Audio 1>`, the fl2va
+first frame pinned, the prompt saying "continuing directly from". Window 1 could
+not continue anything. Pulse Infinity renders a story one beat per queue run, and
+each beat has to open on the last frame of the beat before it — so now window 1
+can too.
+
+A shot payload may carry `continue_from` — `{run_dir, run_id, cache_key}`, the
+segment it picks up from, relative to ComfyUI's output folder. When the first
+shot carries one, Pulse Slate compiles window 1 exactly as a continuation window
+(`compiler._continues`), and Pulse Render fills its carry-over sockets from that
+run's files with the same `carry_from_segment` a reused window's successor uses.
+The window's key chains to the segment it continues (`["upstream", key]`), so
+re-rendering the earlier beat re-renders this one, and renaming its folder does
+not. The slate's own `continuity` setting decides the seam, as it does inside one
+render; `last_frame_carry` there puts window 1 on fl2va, which takes no
+references, and the compile says so.
+
+Refused rather than rendered around: a continued segment that is missing, moved,
+on another canvas, or named by a path outside the output folder stops the render
+(`CarryInError`) — window 1 was compiled around the carried frame, so rendering
+without it would renumber every reference after it. Pulse Slate's single-window
+path blocks `positive`/`latent` for a continued film instead of conditioning it
+with empty carry sockets, and an fl2va window pinned to a carried frame that is
+not there now raises instead of sampling unpinned.
+
+Nothing moves for a film that continues nothing: `carry_in` is written into a
+window only when set, and is not key material itself. A test pins the keys and run
+folder of a reference document as they were before this change.
+
 ### Fixed — a one-window film carries the supplied voice
 
 With `use_reference_audio` on, Pulse Render replaces H3's decoded track with your

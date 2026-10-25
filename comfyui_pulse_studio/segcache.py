@@ -67,6 +67,10 @@ __all__ = [
     "segment_paths",
     "plan_window",
     "seconds_per_frame",
+    "CarryInError",
+    "carry_in_descriptor",
+    "carry_in_problems",
+    "resolve_carry_source",
 ]
 
 MANIFEST_SCHEMA = 1
@@ -289,6 +293,115 @@ def segment_paths(window_index, key):
         "audio_path": "%s.audio.flac" % stem,
         "last_frame_path": "%s.last.png" % stem,
     }
+
+
+# ── carry-in: a film that opens where a previous run left off ───────────────
+
+class CarryInError(ValueError):
+    """The run a timeline continues cannot be found, or does not fit it.
+
+    Raised rather than rendered around. Window 0 of such a timeline was compiled
+    with the carried frame as <Picture 1> and every user reference numbered after
+    it, so rendering it without that frame is the hole-in-the-sockets failure
+    `render.load_window_references` refuses everywhere else.
+    """
+
+
+def carry_in_descriptor(run_dir, run_id, cache_key):
+    """The `carry_in` a window block records: the segment a film continues.
+
+    `run_dir` and `run_id` name the previous run's folder *relative to ComfyUI's
+    output directory*, with forward slashes, never as an absolute path. The same
+    document is read by a ComfyUI on Windows and by tools running under WSL, and
+    an output folder that moves must not orphan every carried beat inside it.
+    """
+    return {"run_dir": _portable(run_dir), "run_id": _portable(run_id),
+            "cache_key": str(cache_key or "")}
+
+
+def _portable(path):
+    """A relative folder written the one way both operating systems read."""
+    return str(path or "").replace("\\", "/").strip("/")
+
+
+def carry_in_problems(carry_in):
+    """Why a carry_in cannot be used, as strings. Empty means usable.
+
+    The folder names come from a document, and the document from a node payload,
+    so they are checked before anything is opened: relative, inside the output
+    directory, no climbing out of it with `..`.
+    """
+    if not isinstance(carry_in, dict):
+        return ["continue_from must be a mapping with run_dir, run_id and cache_key, "
+                "got %r" % (type(carry_in).__name__,)]
+    problems = []
+    for field in ("run_dir", "run_id", "cache_key"):
+        value = carry_in.get(field)
+        if not isinstance(value, str) or not value.strip():
+            problems.append("continue_from has no %s" % field)
+    for field in ("run_dir", "run_id"):
+        raw = carry_in.get(field)
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        parts = _portable(raw).split("/")
+        if raw.startswith(("/", "\\")) or ":" in raw or any(p in ("", ".", "..") for p in parts):
+            problems.append(
+                "continue_from %s %r must be a folder under ComfyUI's output "
+                "directory -- not an absolute path, and not one that climbs out of it"
+                % (field, raw))
+    key = carry_in.get("cache_key")
+    if isinstance(key, str) and key.strip() and not all(c in "0123456789abcdef" for c in key):
+        problems.append("continue_from cache_key %r is not a segment key" % (key,))
+    return problems
+
+
+def resolve_carry_source(output_directory, carry_in, width=None, height=None):
+    """The segment a carried-in window continues, as (manifest, entry, problems).
+
+    Read-only by design. `Manifest.load` moves a corrupt manifest aside, which is
+    the right repair for the folder a render is writing into and the wrong side
+    effect on somebody else's -- this folder belongs to the run being continued,
+    and is only looked at.
+
+    The checks are the ones `carry_from_segment` does not make: the entry exists
+    (it would otherwise hand back no frame, silently), its files are on disk, and
+    its canvas is this film's -- a carried frame fitted to another canvas is a
+    different picture.
+    """
+    problems = carry_in_problems(carry_in)
+    if problems:
+        return None, None, problems
+    where = "%s/%s" % (_portable(carry_in["run_dir"]), _portable(carry_in["run_id"]))
+    directory = os.path.join(output_directory, *where.split("/"))
+    try:
+        with open(os.path.join(directory, MANIFEST_NAME), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict) or not isinstance(data.get("segments"), list):
+            raise ValueError("it is not a segment manifest")
+    except FileNotFoundError:
+        return None, None, [
+            "the run it continues (%s) has no manifest.json -- was that folder moved "
+            "or deleted?" % where]
+    except (ValueError, OSError) as exc:
+        return None, None, [
+            "the manifest of the run it continues (%s) cannot be read: %s" % (where, exc)]
+
+    manifest = Manifest(directory, data=data)
+    key = carry_in["cache_key"]
+    entry = manifest.entry_for(key)
+    if entry is None:
+        return manifest, None, [
+            "the run it continues (%s) holds no segment with key %s..." % (where, key[:12])]
+    if not entry.get("last_frame_path") or not manifest.files_present(entry):
+        return manifest, entry, [
+            "the segment it continues (%s, key %s...) is missing files on disk"
+            % (where, key[:12])]
+    if width and height and (entry.get("width"), entry.get("height")) != (int(width), int(height)):
+        return manifest, entry, [
+            "the segment it continues is %sx%s and this film is %dx%d -- a carried "
+            "frame cannot change canvas" % (entry.get("width"), entry.get("height"),
+                                            int(width), int(height))]
+    return manifest, entry, []
 
 
 # ── the manifest (§7.3) ─────────────────────────────────────────────────────

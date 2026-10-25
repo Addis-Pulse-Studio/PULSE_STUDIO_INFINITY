@@ -260,7 +260,11 @@ def _ordinal_map(timeline, plan=None):
             continue
         lines.append("window %d (%s):" % (window.index + 1, window.branch))
         for ref in tagged:
-            what = "carried from the previous window" if ref.synthetic else (ref.name or "")
+            # A carry-over socket on window 1 can only be a carry-in: the film opens
+            # where a previous run left off, and that is what it carries from.
+            what = ((("carried from the previous run" if window.index == 0
+                      else "carried from the previous window"))
+                    if ref.synthetic else (ref.name or ""))
             if getattr(ref, "pieces", None):
                 what += "  (voice track: %s)" % ", ".join(p.name for p in ref.pieces)
             lines.append("    %-14s %s" % (ref.tag, what))

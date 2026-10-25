@@ -112,6 +112,13 @@ class Timeline:
         # ref_guided_carry: continuation windows pin the previous last frame with a
         # guide while staying on the reference branch. Set by the node layer.
         self.guided_carry = False
+        # The previous run this film opens where it left off: a
+        # segcache.carry_in_descriptor, set by the node layer from the first
+        # shot's `continue_from`. Window 0 then continues it exactly as window 1
+        # continues window 0 (compiler._continues). Never serialised -- like
+        # guided_carry it is a property of this compile, and to_dict() of a
+        # timeline that does not carry one must not change.
+        self.carry_in = None
         # Where anyone is audibly speaking, as (first, end) frames on the film clock
         # -- every lip-sync recording's level, merged. Measured by the node layer
         # (it needs the audio); read by the `speech_aware` partition and by the

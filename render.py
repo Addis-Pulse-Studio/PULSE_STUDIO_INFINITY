@@ -84,10 +84,12 @@ from .comfyui_pulse_studio.pulse_timeline import socket_slot_of
 from .comfyui_pulse_studio.report import build_report
 from .comfyui_pulse_studio.segcache import (
     CACHE_AUTO,
+    CarryInError,
     Manifest,
     cache_key,
     derive_run_id,
     plan_window,
+    resolve_carry_source,
     segment_entry,
     segment_paths,
     stale_entries,
@@ -373,15 +375,21 @@ def consumes_carry(compiled):
     return CARRY_IMAGE_ID in (anchors.get("first_frame"), anchors.get(GUIDE_FIRST))
 
 
-def window_key_extras(compiled, previous_key, options):
+def window_key_extras(compiled, previous_key, options, carried_in=False):
     """Cache-key material only the executor can supply. See segcache.cache_key_material.
 
     `upstream`: the previous window's key, for a window that consumes its output.
     Re-render window k and window k+1's carried frame changes -- without this the
     cache handed back a k+1 conditioned on the old k, and the seam jumped.
+
+    `carried_in`: window 0 of a film that opens where a previous run left off.
+    `previous_key` is then the key of the segment it continues, and it chains
+    whether or not anything visual is carried: the window was compiled as a
+    continuation either way (compiler._continues), so the run it continues is
+    part of what it rendered.
     """
     extra = []
-    if previous_key and consumes_carry(compiled):
+    if previous_key and (carried_in or consumes_carry(compiled)):
         extra.append(["upstream", previous_key])
     # The same pictures, fitted differently, are different conditioning. Only on
     # a window that carries a user picture, so nothing else moves.
@@ -433,6 +441,14 @@ def condition_window(window, side, width, height, carry_frame, carry_clip,
         anchors = window.anchors
         timeline = side.timeline
         if anchors.get("first_frame") == CARRY_IMAGE_ID:
+            if carry_frame is None:
+                # fit_image(None) is None, and a None first_frame is a legal call:
+                # the window would sample unpinned and the seam it exists to hold
+                # would simply jump. The guided path above refuses the same way.
+                raise SocketGapError(
+                    "window %d is pinned to the last frame of what it continues "
+                    "(fl2va), and that frame is neither in memory nor on disk. "
+                    "Requeue with cache_mode force_rerender." % (window.index + 1,))
             first = media.fit_image(carry_frame, width, height, resize_method)
         elif anchors.get("first_frame"):
             first = _anchor_image(anchors["first_frame"], side, width, height, resize_method,
@@ -776,10 +792,31 @@ def run(timeline_dict, side, model, vae, audio_vae, model_fl2va=None,
                              node_version=timeline_dict.get("node_version", ""),
                              model_fingerprint=model_fp, created_utc=_now())
 
+    # ── carry-in: a film that opens where a previous run left off ───────────
+    #
+    # Window 0 was compiled as a continuation (compiler._continues), so its
+    # carry-over sockets are filled from the end of the run it continues, exactly
+    # as a reused window's successor is filled from that window's files. Resolved
+    # before anything is decided: a film whose first window cannot be conditioned
+    # must stop here, not after the models have loaded.
+    carry_in = (windows_doc[0].get("carry_in") if windows_doc else None) or None
+    carry_manifest = carry_entry = None
+    if carry_in:
+        carry_manifest, carry_entry, carry_problems = resolve_carry_source(
+            folder_paths.get_output_directory(), carry_in,
+            width=windows_doc[0].get("width"), height=windows_doc[0].get("height"))
+        if carry_problems:
+            message = ("this film opens where %s/%s left off, but %s"
+                       % (carry_in.get("run_dir"), carry_in.get("run_id"),
+                          "; ".join(carry_problems)))
+            if not options.dry_run:
+                raise CarryInError(message)
+            warnings.append(message)
+
     # ── decide, for every window, before rendering any of them ──────────────
     decisions = {}
     keys = []
-    previous_key = None
+    previous_key = carry_in.get("cache_key") if carry_in else None
     for position, window in enumerate(windows_doc):
         compiled = plan_windows[position] if position < len(plan_windows) else None
         on_fl2va = window.get("branch") == BRANCH_FL2VA and model_fl2va is not None
@@ -787,7 +824,9 @@ def run(timeline_dict, side, model, vae, audio_vae, model_fl2va=None,
                         fl2va_fp if on_fl2va else model_fp,
                         fl2va_patch_fp if on_fl2va else patch_fp,
                         options.audio_mode, options.remix_strength,
-                        extra=window_key_extras(compiled, previous_key, options))
+                        extra=window_key_extras(
+                            compiled, previous_key, options,
+                            carried_in=(position == 0 and bool(carry_in))))
         window["cache_key"] = key
         keys.append(key)
         previous_key = key
@@ -854,6 +893,20 @@ def run(timeline_dict, side, model, vae, audio_vae, model_fl2va=None,
     # Whether the window *before* this one came off disk. A reused segment is
     # already encoded, so a seam against it can only be corrected on one side.
     reused_previous = False
+
+    # A carried-in window 0 that is about to render reads its carry-over from the
+    # end of the run it continues -- only what it asks for, as for a reused
+    # window's successor. One that is itself reused needs nothing: its segment is
+    # already on disk. The run it continues is already encoded, so it counts as a
+    # reused predecessor for the colour seam.
+    first_decision = decisions.get(windows_doc[0]["window_index"]) if windows_doc else None
+    if (carry_entry is not None and plan_windows and first_decision is not None
+            and not first_decision.reuse):
+        carry_frame, carry_clip, carry_audio_clip = carry_from_segment(
+            carry_manifest, carry_entry,
+            wants_video=window_wants(plan_windows[0], CARRY_VIDEO_ID),
+            wants_audio=window_wants(plan_windows[0], CARRY_AUDIO_ID))
+        reused_previous = True
 
     for position, window in enumerate(windows_doc):
         index = window["window_index"]
@@ -941,16 +994,19 @@ def run(timeline_dict, side, model, vae, audio_vae, model_fl2va=None,
         # entrance frame. The encode is further down and `del images` is the
         # deadline, so this is a fourteen-line window and there is no second
         # chance at it.
-        if options.treat_colour_seams and carry_frame is not None and position:
+        if options.treat_colour_seams and carry_frame is not None and (position or carry_in):
             if reused_previous:
                 # The reuse path never decodes, so the previous window's frame
                 # came back from a PNG and the segment it belongs to is already
                 # encoded. Correcting this window against it would grade a
                 # boundary only half of which can move.
                 warnings.append(
-                    "window %d follows a cached segment, so its colour was not "
-                    "matched across the seam. Re-render both windows together "
-                    "(cache_mode: off) if the grade steps there." % index)
+                    ("window %d follows a cached segment, so its colour was not "
+                     "matched across the seam. Re-render both windows together "
+                     "(cache_mode: off) if the grade steps there." % index)
+                    if position else
+                    ("window 1 continues a previous run, which is already encoded, so "
+                     "its colour was not matched across that seam."))
             else:
                 images = media.match_colour_across_seam(
                     images, carry_frame, ramp_frames=SEAM_COLOUR_RAMP_FRAMES)

@@ -113,7 +113,13 @@ from .comfyui_pulse_studio.recipes import (
 )
 from .comfyui_pulse_studio.report import build_report
 from .comfyui_pulse_studio.retake import RetakeError, plan_retake
-from .comfyui_pulse_studio.segcache import CACHE_MODES, ReuseOnlyMiss
+from .comfyui_pulse_studio.segcache import (
+    CACHE_MODES,
+    CarryInError,
+    ReuseOnlyMiss,
+    carry_in_descriptor,
+    carry_in_problems,
+)
 from .comfyui_pulse_studio.sockets import SocketGapError, check_socket_groups, drop_missing
 from .comfyui_pulse_studio.still import StillError, plan_still
 from .comfyui_pulse_studio.timeline import Shot
@@ -938,6 +944,23 @@ class PulseSlate:
 
         # ── continuity (§11) ────────────────────────────────────────────────
         problems = check_continuity(shot_blocks, continuity, model_fl2va is not None)
+        carry_in = getattr(timeline, "carry_in", None)
+        if carry_in and continuity == CONTINUITY_KEYFRAME_PAIRS:
+            problems.append(
+                "this film opens where a previous run left off, and continuity is "
+                "keyframe_pairs, which pins its first frame to the first shot's "
+                "start_image instead. One frame cannot be both. Use 'none' or "
+                "'ref_guided_carry' -- or 'last_frame_carry', which pins the "
+                "carried frame itself.")
+        if carry_in and continuity == CONTINUITY_LAST_FRAME:
+            # Legal, and it pins the seam -- but the first window then samples on
+            # fl2va, which takes no references at all: no face, no voice. Over a
+            # chain of beats that is identity held by one frame alone.
+            notes.append(
+                "this film continues a previous run on the fl2va branch "
+                "(last_frame_carry), which takes no references -- no face or voice "
+                "reference reaches its first window, only the carried frame. For a "
+                "chain of beats, 'none' keeps the cast references alive.")
         if problems:
             message = ("This timeline cannot be compiled:\n  - "
                        + "\n  - ".join(problems))
@@ -1030,6 +1053,19 @@ class PulseSlate:
                  plan.total_seconds, width, height)
 
         # ── the short path: hand back conditioning for the graph's own sampler ─
+        #
+        # Not for a film that continues a previous run: its first window's
+        # carry-over sockets are filled from that run's files, which only Pulse
+        # Render reads. Conditioned here they would be empty -- a SocketGapError on
+        # ref2va, and on fl2va an unpinned first frame with no error at all.
+        if carry_in:
+            blocked = ExecutionBlocker(
+                "This film opens where a previous run left off, so its first window "
+                "is conditioned from that run's files, which only a Pulse Render (or "
+                "Pulse Infinity Render) reads. Connect the `timeline` output to one; "
+                "`positive` and `latent` are blocked on this path.")
+            return ((document, side), blocked, blocked, media.empty_audio(),
+                    media.empty_images(width, height), preview)
         if len(plan.windows) == 1:
             try:
                 positive, latent = render.condition_window(
@@ -1475,12 +1511,52 @@ def _apply_shot_nodes(timeline, side, payloads, project_continuity):
 
     notes.extend(_bind_speakers(timeline, shots, payloads))
 
+    timeline.carry_in, carry_notes = _carry_in_of(payloads)
+    notes.extend(carry_notes)
+
     timeline.shots = shots
     timeline.duration_seconds = cursor
     notes.extend(_inert_audio_modes(inert_modes, audio_connected))
     if not shots:
         notes.append("every connected PulseShot is empty; there is nothing to render.")
     return notes
+
+
+def _carry_in_of(payloads):
+    """The previous run the first shot says it continues. Returns (carry_in, notes).
+
+    A shot payload may carry `continue_from` -- {run_dir, run_id, cache_key}, the
+    segment it picks up from. Pulse Infinity's Dynamic Shot sets it on every beat
+    that is not a cut, so each beat opens where the one before it left off.
+
+    Only the first shot can. A film continues something before its first frame,
+    never in its middle: every later shot already continues the shot before it,
+    and a window has one first frame to give. A later `continue_from` is ignored
+    and said so; an unusable one leaves the film opening fresh, also said so,
+    rather than guessing at a folder.
+    """
+    notes = []
+    carry_in = None
+    for index, payload in enumerate(payloads):
+        source = payload.get("continue_from")
+        if not source:
+            continue
+        label = payload.get("label") or payload.get("shot_id")
+        if index:
+            notes.append(
+                "%r asks to continue a previous run, but only the first shot of a "
+                "timeline can -- every later shot continues the one before it. "
+                "Ignored." % (label,))
+            continue
+        problems = carry_in_problems(source)
+        if problems:
+            notes.append(
+                "%r asks to continue a previous run, but %s. It opens fresh instead."
+                % (label, "; ".join(problems)))
+            continue
+        carry_in = carry_in_descriptor(source["run_dir"], source["run_id"],
+                                       source["cache_key"])
+    return carry_in, notes
 
 
 def _auto_duration(payload):
@@ -1795,6 +1871,9 @@ def _build_document(timeline, plan, shot_blocks, side, global_prompt, width, hei
             block["speaker_binding"] = bindings[block["shot_id"]]
 
     windows = []
+    # A film that opens where a previous run left off: its first window has an
+    # incoming edge like every later one, and records which segment it is.
+    carry_in = getattr(timeline, "carry_in", None)
     for window in plan.windows:
         chosen = sampling(window.branch)
         windows.append(window_block(
@@ -1804,11 +1883,12 @@ def _build_document(timeline, plan, shot_blocks, side, global_prompt, width, hei
             steps=chosen["steps"], sampler=chosen["sampler"],
             scheduler=chosen["scheduler"], cfg=chosen["cfg"],
             sigmas=chosen.get("sigmas"),
-            continuity_in=(CONTINUITY_NONE if window.index == 0 else continuity),
+            continuity_in=(continuity if (window.index or carry_in) else CONTINUITY_NONE),
             continuity_out=(CONTINUITY_NONE if window.index == window.total - 1
                             else continuity),
             branch=window.branch, prompt=window.prompt,
-            audio_plan=window.audio_plan()))
+            audio_plan=window.audio_plan(),
+            carry_in=(carry_in if window.index == 0 else None)))
 
     # Reported as the PEAK across windows, not as the bin's own occupancy. The
     # limits bind per H3 call, and a window carries more than the bin does: the
@@ -1891,6 +1971,12 @@ def _compiled_prompt(document, plan, descriptor, notes):
         head += ("\n\nThis timeline needs a Pulse Render node. Connect the `timeline` "
                  "output to one; `positive` and `latent` are blocked on this path "
                  "because they would be the last window alone.")
+    elif document["windows"] and document["windows"][0].get("carry_in"):
+        source = document["windows"][0]["carry_in"]
+        head += ("\n\nThis film opens where %s/%s left off, so it needs a Pulse Render "
+                 "(or Pulse Infinity Render) node: only that reads the previous run's "
+                 "files. `positive` and `latent` are blocked on this path."
+                 % (source.get("run_dir"), source.get("run_id")))
     return head + "\n\n" + body
 
 
@@ -2041,7 +2127,7 @@ class PulseRender:
         try:
             result = render.run(document, side, model, vae, audio_vae,
                                 model_fl2va=model_fl2va, options=options)
-        except ReuseOnlyMiss as exc:
+        except (ReuseOnlyMiss, CarryInError) as exc:
             message = "Render refused: %s" % (exc,)
             log.error("[PulseStudio] %s", message)
             _warn_on_node(unique_id, [str(exc)])

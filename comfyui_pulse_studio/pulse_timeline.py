@@ -374,7 +374,8 @@ def shot_block(shot_id, index, label="", visual="", audio_line="",
 def window_block(window_index, shot_ids, frames, fps=FPS, width=1344, height=768,
                  seed=0, steps=20, sampler="res_multistep", scheduler="simple",
                  cfg=1.0, continuity_in=CONTINUITY_NONE, continuity_out=CONTINUITY_NONE,
-                 branch=None, prompt="", cache_key=None, sigmas=None, audio_plan=None):
+                 branch=None, prompt="", cache_key=None, sigmas=None, audio_plan=None,
+                 carry_in=None):
     """One entry in `windows`. Spec §3.
 
     `cache_key` is left `None` here on purpose. It cannot be computed by the
@@ -412,6 +413,13 @@ def window_block(window_index, shot_ids, frames, fps=FPS, width=1344, height=768
         block["sigmas"] = [round(float(v), 6) for v in sigmas]
     if audio_plan:
         block["audio_plan"] = audio_plan
+    # Window 0 of a film that opens where a previous run left off: which segment
+    # it continues (segcache.carry_in_descriptor). Written only then, for the same
+    # reason as the two above -- and it is NOT key material itself. The executor
+    # chains the key through ["upstream", <that segment's key>] instead, which
+    # moves when the segment's content does, and not when a folder is renamed.
+    if carry_in:
+        block["carry_in"] = dict(carry_in)
     return block
 
 

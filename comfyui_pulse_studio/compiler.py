@@ -745,8 +745,15 @@ def _continues(timeline, index):
     and the "continue the ongoing action" lines all exist to say. They used to
     test `index > 0` each on their own; asking one question in one place is what
     lets a window 0 continue something too, without six sites to keep in step.
+
+    And window 0 does when the timeline carries a `carry_in`: the film opens where
+    a previous run left off (a Pulse Infinity beat continuing the beat before it),
+    so its first window is compiled exactly as a continuation window -- the
+    carried frame is <Picture 1>, the branch is the continuation branch, the
+    retention lines say "continuing directly from". The executor fills those
+    sockets from the previous run's files, as it does for a reused window.
     """
-    return index > 0
+    return index > 0 or bool(getattr(timeline, "carry_in", None))
 
 
 def _window_bin(timeline, index, branch, carry, shots=(), window=None):
