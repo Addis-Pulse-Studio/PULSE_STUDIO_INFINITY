@@ -97,6 +97,11 @@ MAX_SHORT = 300
 MAX_ITEMS = 12
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+# Ollama's CLI prints a thinking model's reasoning as plain text, not in tags.
+_OLLAMA_THINKING_RE = re.compile(r"^\s*Thinking\.\.\..*?\.\.\.done thinking\.\s*",
+                                 re.DOTALL)
+# Terminal control sequences: Ollama's CLI word-wraps with them even into a pipe.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _FENCE_RE = re.compile(r"```(?:json|JSON)?\s*(.*?)```", re.DOTALL)
 _WORD_RE = re.compile(r"[^\W_]+(?:['’][^\W_]+)?", re.UNICODE)
 
@@ -743,37 +748,56 @@ def unwrap_json(raw: Any) -> tuple[Optional[Any], list[str]]:
     if not isinstance(raw, str):
         return None, ["expected JSON text, got %s" % type(raw).__name__]
 
-    text = _THINK_RE.sub("", raw).strip()
+    text = _ANSI_RE.sub("", raw)
+    text = _OLLAMA_THINKING_RE.sub("", _THINK_RE.sub("", text)).strip()
     if not text:
         return None, ["the response was empty"]
     try:
-        return unwrap_json(json.loads(text))
+        return unwrap_json(_loads(text))
     except ValueError:
         pass
     for fenced in _FENCE_RE.findall(text):
         try:
-            return unwrap_json(json.loads(fenced.strip()))
+            return unwrap_json(_loads(fenced.strip()))
         except ValueError:
             continue
-    candidate = _first_object(text)
-    if candidate is not None:
+    # Every balanced {...}, in order: reasoning written before the answer often
+    # holds a brace or two of its own. The first that parses into something
+    # shaped like a contract wins; failing that, the first that parses at all.
+    first_error, first_parsed = None, None
+    for candidate in _objects(text):
         try:
-            return unwrap_json(json.loads(candidate))
+            data = _loads(candidate)
         except ValueError as exc:
-            return None, ["the response holds something like JSON that does not parse: %s"
-                          % exc]
+            first_error = first_error or exc
+            continue
+        if isinstance(data, dict) and _looks_like_contract(data):
+            return unwrap_json(data)
+        if first_parsed is None:
+            first_parsed = data
+    if first_parsed is not None:
+        return unwrap_json(first_parsed)
+    if first_error is not None:
+        return None, ["the response holds something like JSON that does not parse: %s"
+                      % first_error]
     return None, ["no JSON object found in the response"]
+
+
+def _loads(text: str) -> Any:
+    """json.loads, tolerating a raw newline or tab inside a string -- which models
+    write, and which strict JSON forbids."""
+    return json.loads(text, strict=False)
 
 
 def _looks_like_contract(data: dict) -> bool:
     return any(k in data for k in ("plan", "observation", "visual_prompt", "shot_index"))
 
 
-def _first_object(text: str) -> Optional[str]:
-    """The first balanced {...} in text, minding strings and escapes."""
+def _objects(text: str) -> Iterable[str]:
+    """Every top-level balanced {...} in text, in order, minding strings and escapes."""
     start = text.find("{")
     while start != -1:
-        depth, in_string, escaped = 0, False, False
+        depth, in_string, escaped, end = 0, False, False, None
         for i in range(start, len(text)):
             ch = text[i]
             if in_string:
@@ -790,9 +814,13 @@ def _first_object(text: str) -> Optional[str]:
             elif ch == "}":
                 depth -= 1
                 if depth == 0:
-                    return text[start:i + 1]
-        start = text.find("{", start + 1)
-    return None
+                    end = i
+                    break
+        if end is None:
+            start = text.find("{", start + 1)
+            continue
+        yield text[start:end + 1]
+        start = text.find("{", end + 1)
 
 
 # ── JSON Schema, for agents, tool definitions and docs ──────────────────────

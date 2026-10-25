@@ -28,6 +28,7 @@ Stdlib only, like the rest of the core.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -39,6 +40,8 @@ from .base_director import DirectorCancelled, DirectorError, DirectorTimeout
 __all__ = ["CliResult", "CliRunner", "build_argv", "run_cli"]
 
 _WINDOWS = os.name == "nt"
+#: Terminal control sequences. Some CLIs (Ollama's) emit them into a pipe too.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 
 class CliResult:
@@ -156,7 +159,8 @@ def run_cli(argv: list[str], stdin_text: str, timeout: float = 600.0,
         except Exception:  # pragma: no cover - a child that will not die
             pass
         raise
-    return CliResult(command, stdout, stderr, proc.returncode, time.monotonic() - started)
+    return CliResult(command, _ANSI_RE.sub("", stdout), stderr, proc.returncode,
+                     time.monotonic() - started)
 
 
 class CliRunner:

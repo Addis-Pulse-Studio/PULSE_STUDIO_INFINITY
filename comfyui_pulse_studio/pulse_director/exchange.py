@@ -191,7 +191,8 @@ class CliTransport:
                  path_style: str = "native", model: str = "",
                  runner: Optional[Callable[..., Any]] = None,
                  should_cancel: Optional[Callable[[], bool]] = None,
-                 instruction: str = "") -> None:
+                 instruction: str = "", extra_values: Optional[dict] = None) -> None:
+        self.extra_values = dict(extra_values or {})
         self.template = list(template)
         self.session_root = session_root
         self.timeout = float(timeout)
@@ -211,14 +212,14 @@ class CliTransport:
         if request.observes and request.evidence is not None and caps.sees_frames:
             images = [convert_path(os.path.abspath(request.evidence.absolute(f)), self.path_style)
                       for f in request.evidence.look_at(caps) if f.lower().endswith(".png")]
-        argv = build_argv(self.template, {
+        argv = build_argv(self.template, dict(self.extra_values, **{
             "model": self.model,
             "session_root": convert_path(os.path.abspath(self.session_root), self.path_style),
             "prompt_file": convert_path(os.path.abspath(prompt_path), self.path_style),
             "images": images,
             "instruction": self.instruction,
             "turn_id": request.turn_id,
-        })
+        }))
         result = self.runner(argv, prompt, self.timeout, should_cancel=self.should_cancel,
                              cwd=self.session_root)
         if result.returncode != 0:
@@ -283,7 +284,9 @@ class ExchangeDirector(BaseDirector):
                                 path_style=str(self.settings.get("path_style", "native")),
                                 model=str(self.settings.get("model", "")), runner=runner,
                                 should_cancel=self.should_cancel,
-                                instruction=str(self.settings.get("instruction", "")))
+                                instruction=str(self.settings.get("instruction", "")),
+                                extra_values={"keep_alive": str(
+                                    self.settings.get("keep_alive", "") or "")})
         if kind == "inline":
             return InlineTransport()
         raise DirectorError("%s: transport must be mailbox, cli or inline, got %r"

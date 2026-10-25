@@ -48,11 +48,20 @@ backends:
   # A local model through Ollama's CLI. Nothing leaves the machine.
   ollama:
     transport: cli
-    model: gemma4          # or qwen3.8:27b, clef:27b -- any tag you have pulled
+    model: qwen3.8:27b     # an exact tag from `ollama list`. qwen3.8:27b reports
+                           # what the stills show; gemma4:12b is lighter but leans
+                           # on the plan. A model whose capabilities (`ollama show
+                           # <tag>`) lack `completion` cannot direct.
     vision: true           # false for a text-only model
     free_vram_before_call: true   # unload H3 first: they share the GPU
+    keep_alive: 0s         # and Ollama unloads its model as soon as it answers
     timeout_seconds: 600
-    cli: ["ollama", "run", "{model}", "--format", "json"]
+    cli: ["ollama", "run", "{model}", "--format", "json", "--nowordwrap",
+          "--hidethinking", "--keepalive", "{keep_alive}"]
+    # ComfyUI on Windows, Ollama inside WSL:
+    # cli: ["wsl.exe", "-e", "ollama", "run", "{model}", "--format", "json",
+    #       "--nowordwrap", "--hidethinking", "--keepalive", "{keep_alive}"]
+    # path_style: wsl
 
   # The pi coding agent, on whatever model it is configured with.
   pi:

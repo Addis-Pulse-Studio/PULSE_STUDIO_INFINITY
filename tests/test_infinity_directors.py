@@ -435,7 +435,10 @@ class TestTheCli(unittest.TestCase):
                               constraints=default_constraints(memory, may_end=False))
         turn, _ = run_turn(self._ollama(runner, model="qwen3.8:27b"), request, memory)
         argv, stdin = runner.calls[0]
-        self.assertEqual(argv, ["ollama", "run", "qwen3.8:27b", "--format", "json"])
+        # Checked against Ollama 0.35: no word-wrap escapes, no printed reasoning,
+        # and the model unloaded as soon as it answers so H3 gets the card back.
+        self.assertEqual(argv, ["ollama", "run", "qwen3.8:27b", "--format", "json",
+                                "--nowordwrap", "--hidethinking", "--keepalive", "0s"])
         self.assertIn("You are the director", stdin)
         self.assertFalse(any("director" in a for a in argv))
         self.assertEqual(turn.plan.visual_prompt, "@Alice runs")

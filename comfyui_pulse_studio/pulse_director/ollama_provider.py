@@ -9,12 +9,22 @@ observations are taken from the plan's intent, marked as such.
 
 The GPU is shared. H3 holds about 21 GB of a 32 GB card while it is loaded, and
 a 27B model wants most of the rest, so `free_vram_before_call` (on by default
-here) lets the node layer unload ComfyUI's models before the call. Ollama keeps
-its own model resident afterwards unless told not to: add
-`["--keepalive", "0s"]`-style flags to `cli` if your Ollama version supports
-them, or set OLLAMA_KEEP_ALIVE for the server.
+here) lets the node layer unload ComfyUI's models before the call, and
+`--keepalive {keep_alive}` (0s by default) makes Ollama unload its own model the
+moment it has answered, so H3 has the card back for the next beat.
 
-Thinking models' <think> blocks are stripped before the JSON is read.
+The default command was checked against Ollama 0.35: `--nowordwrap`, because
+the CLI word-wraps with terminal escape codes even into a pipe, and
+`--hidethinking`, because a thinking model's reasoning is printed as plain text
+ahead of the answer. Both are also cleaned up on the way in, for older builds.
+Use a model tag that exists (`ollama list`): a bare `gemma4` asks Ollama for
+`gemma4:latest`, which it would try to download.
+
+The default, qwen3.8:27b, was chosen by running both candidates on the same
+turn -- a beat whose stills show nothing of the plan. It answered in one attempt
+and reported the empty frames as empty; gemma4:12b also answered in one attempt
+but narrated the plan instead of the pictures. gemma4:12b is the lighter choice
+when VRAM is tight.
 """
 
 from __future__ import annotations
@@ -33,10 +43,12 @@ class OllamaDirector(ExchangeDirector):
     default_transport = "cli"
     default_settings = {
         "transport": "cli",
-        "model": "gemma4",
+        "model": "qwen3.8:27b",
         "vision": True,
         "timeout_seconds": 600,
-        "cli": ["ollama", "run", "{model}", "--format", "json"],
+        "keep_alive": "0s",
+        "cli": ["ollama", "run", "{model}", "--format", "json", "--nowordwrap",
+                "--hidethinking", "--keepalive", "{keep_alive}"],
         "path_style": "native",
         "free_vram_before_call": True,
     }

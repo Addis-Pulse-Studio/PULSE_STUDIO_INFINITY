@@ -233,6 +233,26 @@ class TestReadingWhatModelsWrite(unittest.TestCase):
         data, _ = unwrap_json({"plan": {"shot_index": 1}, "result": "ok"})
         self.assertIn("plan", data)
 
+    def test_ollamas_cli_output_as_it_really_arrives(self):
+        """Captured from Ollama 0.35 running gemma4:12b without --hidethinking and
+        --nowordwrap: the reasoning printed as plain text, terminal escapes from
+        its word-wrap, and braces of its own ahead of the answer."""
+        raw = ("Thinking...\nI need {something} like a plan. She is\x1b[2D\x1b[K\n"
+               "lying on stone.\n...done thinking.\n\n"
+               '{"plan": {"shot_index": 2, "visual_prompt": "@Alice runs"}}\n')
+        data, problems = unwrap_json(raw)
+        self.assertEqual(problems, [])
+        self.assertEqual(data["plan"]["visual_prompt"], "@Alice runs")
+
+    def test_a_raw_newline_inside_a_string_is_tolerated(self):
+        data, _ = unwrap_json('{"plan": {"visual_prompt": "line one\nline two"}}'.replace(
+            "\\n", "\n"))
+        self.assertIn("line", data["plan"]["visual_prompt"])
+
+    def test_reasoning_braces_before_the_answer_do_not_win(self):
+        data, _ = unwrap_json('Shape: {"a": 1} then the answer {"plan": {"shot_index": 3}}')
+        self.assertEqual(data, {"plan": {"shot_index": 3}})
+
     def test_nothing_usable_says_so(self):
         self.assertIsNone(unwrap_json("I could not decide.")[0])
         self.assertIsNone(unwrap_json("")[0])

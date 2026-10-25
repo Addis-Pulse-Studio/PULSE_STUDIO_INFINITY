@@ -76,7 +76,10 @@ How to write a beat
 """
 
 OBSERVER_BRIEF = """\
-Report what the evidence actually shows, as changes to the scene memory:
+Report what the evidence actually shows, as changes to the scene memory. Look at
+the stills before you read the plan: a planned person, place or object that is not
+visible is missing -- say so in `summary`, list it in `continuity_issues`, and do
+not report a planned action as done unless you can see it done.
 - `summary`: one or two sentences of what is on screen -- not what was meant.
 - `completed_actions`: at most three story events this beat finished, each a
   short past-tense phrase ("pushed the heavy gate open"). Glances, smiles,
