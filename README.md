@@ -48,7 +48,7 @@ against. It has to be a build carrying `comfy_extras/nodes_minimax_h3.py` and
 is no mechanism for a custom node to enforce a host version, so this is
 documentation rather than a check.
 
-Then load one of the five graphs in `example_workflows/`:
+Then load one of the graphs in `example_workflows/`:
 
 | graph | what it shows |
 |---|---|
@@ -57,6 +57,8 @@ Then load one of the five graphs in `example_workflows/`:
 | `PulseSlate_Cast.json` | The Asset Bin — named references, descriptions, retention, per-shot audio. |
 | `PulseSlate_Voice.json` | Lip sync: one narration, one `PulseVoice`, every window — and what the report says when the recording does not cover the film. |
 | `PulseSlate_Retake.json` | Re-render a bad span of a finished film, in place. |
+| `PulseInfinity_Scripted.json` | Pulse Studio Infinity's closed loop on the offline scripted director: queue it three times, three beats. |
+| `PulseInfinity_ClosedLoop.json` | The closed loop with HyperFlow 8-step, your director (Claude Code by default) and a Fish Audio S2 dialogue branch. Needs ComfyUI-HyperFlow and ComfyUI-FishAudioS2. |
 
 Every one of them opens with no third-party pack installed. The placeholder
 references `PulseSlate_Cast.json` cites are copied into ComfyUI's `input/` folder
