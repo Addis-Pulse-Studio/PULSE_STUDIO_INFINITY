@@ -788,7 +788,8 @@ def read_segment_frames(path):
 MAX_SEGMENT_FRAMES = 400
 
 
-def concat_videos(paths, out_path, frame_counts=None, fps=24, audio=None):
+def concat_videos(paths, out_path, frame_counts=None, fps=24, audio=None,
+                  replace_audio=False):
     """Join segment files into one video. Spec §8.
 
     The video is stream-copied: no decode, no re-encode, no frame stack, so a
@@ -796,6 +797,12 @@ def concat_videos(paths, out_path, frame_counts=None, fps=24, audio=None):
     long the film is. `frame_counts` places each segment exactly, and `audio` is
     the finished track -- joined from the segments' lossless FLACs by the caller
     and encoded once here. See `_remux_concat` for why the audio is not copied.
+
+    `replace_audio` says `audio` is not the segments' own sound but a track that
+    replaces it -- the supplied takes under `use_reference_audio`. A single segment
+    is otherwise copied as it is, which is right for its own sound and wrong for a
+    replacement: the copy kept H3's decoded track while the node's AUDIO output
+    said the film carried the recording.
 
     Every segment was encoded by `write_segment_video` with identical parameters,
     which is what makes the video copy legal. Returns the output path, or "" if
@@ -815,10 +822,12 @@ def concat_videos(paths, out_path, frame_counts=None, fps=24, audio=None):
                       "segment, so they cannot be placed exactly")
             return ""
 
-    if len(paths) == 1:
+    if len(paths) == 1 and not (replace_audio and audio is not None):
         # One window: no join to do, and nothing to gain from re-encoding its
         # audio. Copied rather than referenced so the output is a file in its own
-        # right and deleting the cache cannot empty it.
+        # right and deleting the cache cannot empty it. A replacement track is the
+        # exception -- that one has to be muxed in, so it takes the remux below,
+        # which places a single segment at zero like any other.
         import shutil
 
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)

@@ -407,6 +407,37 @@ class TestReusedWindowsStillCarryContinuity(unittest.TestCase):
         self.assertIn("wants_audio=window_wants(following, CARRY_AUDIO_ID)", source)
 
 
+class TestAOneWindowFilmCarriesTheSuppliedVoice(unittest.TestCase):
+    """`use_reference_audio` reaches the file even when there is nothing to join.
+
+    A one-window film is copied, not remuxed -- right for its own sound, and it
+    was applied to a replacement track too: the copy kept H3's decoded audio
+    while the node's AUDIO output said the film carried the recording. Every
+    Pulse Infinity beat is one window, so this is the common case there rather
+    than an edge.
+
+    media.py and render.py need PyAV and torch, so the contract is asserted over
+    their source, as the neighbouring classes do.
+    """
+
+    @staticmethod
+    def _source(name):
+        import pathlib
+        return (pathlib.Path(__file__).parent.parent / name).read_text(encoding="utf-8")
+
+    def test_a_single_segment_is_copied_only_when_its_own_sound_is_kept(self):
+        source = self._source("media.py")
+        body = source.split("def concat_videos(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("replace_audio=False", body.split(")", 1)[0])
+        self.assertIn("if len(paths) == 1 and not (replace_audio and audio is not None):",
+                      body)
+
+    def test_render_says_when_the_track_is_a_replacement(self):
+        source = self._source("render.py")
+        self.assertIn("audio_replaced = True", source)
+        self.assertIn("replace_audio=audio_replaced", source)
+
+
 class TestAssemblySurvivesItsOwnFailure(unittest.TestCase):
     """A container-format problem must not destroy a completed render.
 

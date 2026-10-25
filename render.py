@@ -1030,6 +1030,10 @@ def run(timeline_dict, side, model, vae, audio_vae, model_fl2va=None,
             "carries H3's decoded track -- a VAE round trip of them. Turn "
             "use_reference_audio on to mux the exact takes." % options.audio_mode)
 
+    # Whether `audio_out` is a replacement for the segments' own sound. The
+    # assembly has to know: a one-window film is otherwise copied as it is, with
+    # H3's track inside it.
+    audio_replaced = False
     if options.use_reference_audio:
         # The generated track is still on disk in every segment's .flac, so this
         # is a mux choice rather than a loss -- flip the widget and requeue and
@@ -1045,6 +1049,7 @@ def run(timeline_dict, side, model, vae, audio_vae, model_fl2va=None,
             # is discarded along with the audio it was applied to. Said plainly
             # rather than left for someone to infer from a quiet report.
             audio_out = supplied
+            audio_replaced = True
             log.info("[PulseStudio] using the supplied lip-sync audio; H3's generated "
                      "track is still in each segment's .flac")
             if options.treat_audio_seams:
@@ -1064,7 +1069,7 @@ def run(timeline_dict, side, model, vae, audio_vae, model_fl2va=None,
             joined = media.concat_videos(
                 video_files, final_path, frame_counts=video_frames,
                 fps=(windows_doc[0].get("fps") if windows_doc else 24) or 24,
-                audio=audio_out)
+                audio=audio_out, replace_audio=audio_replaced)
             if joined:
                 video = media.video_from_file(joined)
                 if options.upscale != UPSCALE_OFF:

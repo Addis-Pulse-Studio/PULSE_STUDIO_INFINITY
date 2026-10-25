@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Fixed — a one-window film carries the supplied voice
+
+With `use_reference_audio` on, Pulse Render replaces H3's decoded track with your
+recordings. A film of two or more windows got that; a film of one window did not.
+There is nothing to join in one window, so `assembled.mp4` was a copy of the
+segment file — H3's own audio inside it — while the node's `audio` output carried
+the recording, and the two disagreed about what the film sounded like.
+
+`media.concat_videos` takes `replace_audio`, and Pulse Render sets it when the
+track is a replacement: a single segment is then remuxed with the recording instead
+of copied. A one-window film keeping its own sound is still copied as before. No
+cache key moves; requeueing a one-window render with `use_reference_audio` on
+reuses the segment and rebuilds `assembled.mp4` with the right track.
+
 ### Fixed — wires land on the sockets they were saved on (frontend 1.57)
 
 Frontend 1.57 keeps links in a store keyed by *slot number*: `input.link` is a
