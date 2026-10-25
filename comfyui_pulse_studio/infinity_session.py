@@ -404,6 +404,10 @@ class InfinitySession:
 
     def _ask(self, director: ExchangeDirector, request: TurnRequest, key: str,
              last_plan: Optional[DirectedShotPlan] = None) -> TurnResponse:
+        # On disk before anything is asked: a director looking for its first turn
+        # finds the session by its folder, and a fresh session has nothing else
+        # written yet.
+        self.save()
         self._write_schemas()
         replay = self._replayed(key, request, last_plan)
         if replay is not None:

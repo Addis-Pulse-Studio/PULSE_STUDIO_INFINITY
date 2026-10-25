@@ -91,6 +91,20 @@ class TestWaitingAndReading(DeskCase):
         self.assertEqual(message["session_root"], self.session)
 
 
+class TestTheFirstTurnIsVisible(DeskCase):
+    """A film's opening question can reach the desk before anything else of the
+    session does. Found live: the desk listed sessions by session.json, the
+    session wrote it only after the first answer, and both sides waited."""
+
+    def test_a_session_with_only_a_desk_is_found(self):
+        os.unlink(os.path.join(self.session, "session.json"))
+        code, out = self.run_desk("next")
+        self.assertEqual(code, 0)
+        self.assertIn("TURN b0001-open-a1", out)
+        code, out = self.run_desk("sessions")
+        self.assertIn("starting", out)
+
+
 class TestAnswering(DeskCase):
     def test_a_broken_answer_is_refused_before_it_reaches_comfyui(self):
         bad = json.loads(json.dumps(GOOD))

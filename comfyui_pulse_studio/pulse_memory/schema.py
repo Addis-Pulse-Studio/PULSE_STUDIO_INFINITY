@@ -472,7 +472,9 @@ def _beat_frames(seconds: Any, fps: int, notes: list[str]) -> int:
         notes.append("a %.2f s beat is over one window's %.2f s ceiling; it renders as "
                      "%.2f s" % (seconds, MAX_BEAT_SECONDS, MAX_BEAT_SECONDS))
         frames = MAX_WINDOW_FRAMES
-    elif abs(frames_to_seconds(frames, fps) - seconds) > 1e-6:
+    elif abs(frames_to_seconds(frames, fps) - seconds) > 0.5 / fps:
+        # More than half a frame out: a real snap, worth saying. "5.17 s" for the
+        # 124-frame floor (5.1667 s) is the documented spelling, not a snap.
         notes.append("%.2f s snapped to the frame grid: %d frames (%.2f s)"
                      % (seconds, frames, frames_to_seconds(frames, fps)))
     return frames

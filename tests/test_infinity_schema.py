@@ -68,6 +68,12 @@ class TestTheSpecPlanRoundTrips(unittest.TestCase):
         self.assertAlmostEqual(MIN_BEAT_SECONDS, 124 / 24.0)
         self.assertAlmostEqual(MAX_BEAT_SECONDS, 362 / 24.0)
 
+    def test_the_documented_spelling_of_the_floor_is_not_called_a_snap(self):
+        plan, _ = DirectedShotPlan.from_dict(_plan(duration_seconds=5.17))
+        self.assertEqual((plan.frames, plan.notes), (124, []))
+        plan, _ = DirectedShotPlan.from_dict(_plan(duration_seconds=6.0))
+        self.assertTrue(any("158 frames" in n for n in plan.notes))
+
     def test_optional_fields_are_written_only_when_set(self):
         plan, _ = DirectedShotPlan.from_dict(_plan(beat="Alice leaves the clock behind",
                                                    scene="Clock garden", scene_change=False))

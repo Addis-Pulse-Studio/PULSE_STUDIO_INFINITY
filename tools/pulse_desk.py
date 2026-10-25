@@ -92,11 +92,18 @@ def sessions_root(args):
 
 
 def list_sessions(root):
+    """Every folder that is a session -- one with a session.json, or with a desk.
+
+    The desk counts on its own: a film's very first question (the opening turn)
+    can be on the desk before anything else of the session is.
+    """
     try:
         names = sorted(os.listdir(root))
     except OSError:
         return []
-    return [n for n in names if os.path.isfile(os.path.join(root, n, "session.json"))]
+    return [n for n in names
+            if os.path.isfile(os.path.join(root, n, "session.json"))
+            or os.path.isdir(os.path.join(root, n, "desk"))]
 
 
 def _pending(root, session=None):
@@ -168,8 +175,11 @@ def _brief(session_root, message):
 def cmd_sessions(args):
     root = sessions_root(args)
     for name in list_sessions(root):
-        with open(os.path.join(root, name, "session.json"), "r", encoding="utf-8") as fh:
-            state = json.load(fh)
+        try:
+            with open(os.path.join(root, name, "session.json"), "r", encoding="utf-8") as fh:
+                state = json.load(fh)
+        except (OSError, ValueError):
+            state = {"status": "starting", "beat": 0, "pending_beat": 1}
         print("%-24s %-9s beat %s committed, beat %s next" % (
             name, state.get("status"), state.get("beat"), state.get("pending_beat")))
     return 0

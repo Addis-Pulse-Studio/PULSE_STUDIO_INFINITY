@@ -315,6 +315,21 @@ class TestUndo(SessionCase):
         self.assertEqual(peek_revision(os.path.join(self.output, "nowhere")), "new")
 
 
+class TestTheSessionIsOnDiskBeforeItAsks(SessionCase):
+    def test_session_json_exists_when_the_director_is_first_asked(self):
+        """The director finds its first turn through the session's folder."""
+        session = self.session()
+        seen = []
+
+        class Checking(_Counting):
+            def answer(self, request):
+                seen.append(os.path.exists(os.path.join(session.root, SESSION_FILE)))
+                return super().answer(request)
+
+        session.plan_for_pending(self.director(session, cls=Checking))
+        self.assertEqual(seen, [True])
+
+
 class TestNames(unittest.TestCase):
     def test_session_names_are_safe_folders_everywhere(self):
         self.assertEqual(safe_session_name("Clock Garden!"), "Clock_Garden")
