@@ -4,6 +4,51 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Pulse Studio Infinity — a film that directs itself
+
+A third path, alongside one window and many: an adaptive closed loop. H3 renders
+a beat; a director looks at what actually came out; a scene memory records it;
+the next queue run renders the beat the director planned, opening on the last
+frame of this one. One queue run is one beat, so a film is as long as you keep
+queueing — or auto-continue does it for you.
+
+- **Four nodes** (`infinity_nodes.py`): Pulse Infinity Loop (the session),
+  Pulse Dynamic Shot (the plan as a PulseShot payload), Pulse Infinity Render
+  (Pulse Render pinned to the beat's folder, continuing the last beat), Pulse
+  Observer (the director's turn, the memory commit, the reel). Pulse Slate sits
+  between them unchanged, compiling the cast and the recipe as it always has.
+- **One key picks the director** — `director_backend`: `claude_code` (default),
+  `gemini_antigravity`, `ollama`, `pi`, `scripted` — set on the Loop node, by
+  `PULSE_DIRECTOR_BACKEND`, or in `ComfyUI/user/pulse_infinity.yaml` (start from
+  `pulse_infinity.example.yaml`). Claude Code and Antigravity direct through the
+  Director Desk, files in the session folder; Ollama and pi through their own
+  CLIs. The pack still opens no socket; process creation is confined to one
+  module, and a test holds it there.
+- **One contract**, the mission's `DirectedShotPlan`, read back byte for byte,
+  with an observation and a turn beside it (`pulse_memory/schema.py`). Every
+  backend's answer goes through one validator and is retried with the reasons
+  when it falls short.
+- **A scene memory** (`pulse_memory/`): the spec's state contract, plus an entity
+  ledger with pinned identities, inventories, injuries and moods, the place's
+  camera orientation and landmarks, and an anti-loop blacklist. At cfg 1.0 a
+  negative prompt does nothing, so restaged actions, reworded beats, stalls and
+  spent scenes are refused at the plan instead.
+- **Nothing happens twice**: director exchanges are journaled and replayed, a
+  render is committed once, reroll and replan restore the memory from before the
+  beat, and a crash between the memory and the session cannot commit a beat twice.
+- **A director workspace**: `tools/setup_director_workspace.py` installs the
+  `pulse-director` Claude Code skill and Antigravity's rules and workflow;
+  `tools/pulse_desk.py` is the agent's side of the desk, running the pack's own
+  validator before an answer is sent.
+- **Two graphs**: `PulseInfinity_Scripted.json` (offline, stock loaders — in the
+  shipped set) and `PulseInfinity_ClosedLoop.json` (HyperFlow 8-step, your
+  director, a Fish Audio S2 dialogue branch), built by
+  `tools/build_infinity_workflows.py`.
+
+The ideas behind the memory and the anti-loop rules come from Video-Rebirth's
+HyperFlow Infinity; the code and the words are this pack's own (NOTICE). The
+full guide is `docs/INFINITY.md`.
+
 ### A film can open where a previous run left off
 
 Between the windows of one render, window 2 has always continued window 1: the

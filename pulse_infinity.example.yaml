@@ -1,0 +1,66 @@
+# Pulse Studio Infinity -- configuration.
+#
+# Copy this file to ComfyUI/user/pulse_infinity.yaml (ComfyUI's user folder, which
+# pack updates never touch), or point the PULSE_INFINITY_CONFIG environment
+# variable at your copy. A .json file with the same keys works too. Every key is
+# optional: anything left out takes the default shown here.
+
+# ── The one toggle ──────────────────────────────────────────────────────────
+# Who directs: claude_code | gemini_antigravity | ollama | pi | scripted
+# Overridden by $PULSE_DIRECTOR_BACKEND, and by the Pulse Infinity Loop node's
+# `director_backend` widget when it is not `from_config`. The node's status
+# output always says which one won, and why.
+director_backend: claude_code
+
+# Folder under ComfyUI/output that holds one folder per film.
+sessions_dir: pulse_infinity
+
+loop:
+  max_attempts: 3          # tries per director turn before the beat is refused
+  on_invalid: fail         # or `accept`: keep going on the last parsed answer, warned
+  blacklist_size: 8        # forbidden actions remembered at once
+  blacklist_ttl: 4         # beats an action stays forbidden after it happens
+  scene_budget: 8          # beats before a scene must cut
+  min_beats_before_end: 3  # the director may not end the story sooner
+  reel_every: 1            # rebuild the reel every N committed beats
+
+backends:
+  # Claude Code directs from its workspace through the Director Desk (files in
+  # the session folder): run /pulse-director there. A cloud agent -- the beat's
+  # stills it reads leave the machine through it.
+  claude_code:
+    transport: mailbox     # or `cli` for unattended films (claude -p)
+    timeout_seconds: 900   # how long a turn waits for an answer; 0 waits for ever
+    # cli: ["claude", "-p", "--output-format", "json", "--allowedTools", "Read",
+    #       "--add-dir", "{session_root}"]
+    # ComfyUI on Windows, Claude Code in WSL:
+    # cli: ["wsl.exe", "-e", "claude", "-p", "--output-format", "json",
+    #       "--allowedTools", "Read", "--add-dir", "{session_root}"]
+    # path_style: wsl
+
+  # Gemini in Antigravity, through the same desk; it is pointed at the full
+  # clip, sound included. Antigravity has no CLI -- `cli` runs the Gemini CLI.
+  gemini_antigravity:
+    transport: mailbox
+    timeout_seconds: 900
+    # cli: ["gemini", "-p", "{instruction}"]
+
+  # A local model through Ollama's CLI. Nothing leaves the machine.
+  ollama:
+    transport: cli
+    model: gemma4          # or qwen3.8:27b, clef:27b -- any tag you have pulled
+    vision: true           # false for a text-only model
+    free_vram_before_call: true   # unload H3 first: they share the GPU
+    timeout_seconds: 600
+    cli: ["ollama", "run", "{model}", "--format", "json"]
+
+  # The pi coding agent, on whatever model it is configured with.
+  pi:
+    transport: cli         # or mailbox, run like Claude Code
+    vision: true
+    timeout_seconds: 600
+    cli: ["pi", "-p", "{instruction}"]
+
+  # Offline and deterministic: beats from the Loop node's `script` widget.
+  scripted:
+    loop_script: false

@@ -52,6 +52,20 @@ requires:
     DEALINGS IN THE SOFTWARE.
 
 ============================================================
+IDEAS CREDITED — HYPERFLOW INFINITY (VIDEO-REBIRTH)
+============================================================
+
+Pulse Studio Infinity's closed loop adapts ideas published by Video-Rebirth in
+HyperFlow Infinity (https://github.com/Video-Rebirth/hyperflow-infinity):
+scene-graph memory kept as per-segment deltas, rejecting a beat whose content
+words overlap an earlier one, a per-scene beat budget, stagnation detection,
+retrying a director with the reason its answer was rejected, and journaling
+every director call so a resumed run replays rather than re-asks. Ideas only:
+no code and no prompt text from that project is present in this tree. The
+implementation (comfyui_pulse_studio/pulse_memory/, pulse_director/,
+infinity_session.py) and the director brief are this project's own.
+
+============================================================
 DELIBERATELY NOT USED — GPL-3.0 SOURCES
 ============================================================
 

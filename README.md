@@ -13,6 +13,10 @@ Three things it does that the existing directors don't:
   fifteen.
 - **Still Mode**, so you can make your reference images in the same window you
   use them.
+- **Pulse Studio Infinity**, a film that directs itself: H3 renders a beat, a
+  director -- Claude Code, Gemini in Antigravity, a local model, or a script --
+  looks at what came out, a scene memory records it, and the next beat opens on
+  the last frame of this one. See [below](#pulse-studio-infinity--a-film-that-directs-itself).
 
 Plus compiler correctness, which is invisible when it's right and destroys trust
 when it's wrong.
@@ -167,6 +171,59 @@ handing back the last window alone. Until 3.0.0 it did hand them back, and a
 still-wired sampler quietly re-rendered that one window and saved it as the whole
 film: a 15-second timeline that split into 192 + 175 frames produced a 7-second
 file, with no error anywhere, because 175 frames is a perfectly valid latent.
+
+## Pulse Studio Infinity — a film that directs itself
+
+A third path, for films nobody scripted beat by beat. **One queue run renders one
+beat**:
+
+1. **Pulse Infinity Loop** reads the session folder and hands on the beat the
+   director planned.
+2. **Pulse Dynamic Shot** turns the plan into a shot for Pulse Slate's
+   `shots.shot_1`: camera, action, continuity anchors, the line.
+3. **Pulse Slate** compiles it with your cast and recipe, unchanged.
+4. **Pulse Infinity Render** renders it into the session, opening on the last
+   frame of the previous beat.
+5. **Pulse Observer** shows the result to the director. The director's
+   observation goes into the scene memory, the next plan is stored, and the beat
+   joins the reel.
+
+Queue the graph N times for N beats, or turn on **auto-continue** in the Loop
+node's context menu. Start with `PulseInfinity_Scripted.json` (the offline
+scripted director, three beats), then `PulseInfinity_ClosedLoop.json`
+(HyperFlow 8-step, your director, a Fish Audio S2 dialogue branch).
+
+**One key picks the director:** `director_backend` — `claude_code` (default),
+`gemini_antigravity`, `ollama`, `pi` or `scripted`. Set it on the Loop node, with
+`PULSE_DIRECTOR_BACKEND`, or in `ComfyUI/user/pulse_infinity.yaml`. Start that
+file from [`pulse_infinity.example.yaml`](pulse_infinity.example.yaml).
+- **Claude Code and Antigravity** direct through the **Director Desk**, files in
+  the session folder. `tools/setup_director_workspace.py` installs a workspace
+  with the `pulse-director` skill and the Antigravity rules. Then run
+  `/loop /pulse-director` in Claude Code, or `/pulse-direct` in Antigravity.
+- **Ollama and pi** run through their own command lines.
+
+**Every answer is held to one contract.** That contract is the mission's
+`DirectedShotPlan`, read back byte for byte, with one validator. Refused plans
+go back to the director with the reasons:
+- a hand-typed `<Picture N>`;
+- a cast member who does not exist;
+- a line too long for its beat;
+- a restaged action;
+- a reworded beat;
+- a stall;
+- a scene past its budget.
+
+HyperFlow samples at cfg 1.0, where a negative prompt is never evaluated, so
+this validator is where "don't repeat that" is enforced.
+
+**Nothing happens twice.** Director exchanges are journaled and replayed, a
+render is committed once, and reroll and replan restore the memory from before
+the beat.
+
+The full guide is [`docs/INFINITY.md`](docs/INFINITY.md). It covers the session
+folder, the protocol, the contracts, continuity, dialogue, controls and
+troubleshooting.
 
 ### The segment cache
 
@@ -892,6 +949,38 @@ The moment it grows a brush it has become a different application.
 
 ---
 
+### Pulse Infinity Loop · Dynamic Shot · Infinity Render · Observer
+
+The closed loop. See [Pulse Studio Infinity](#pulse-studio-infinity--a-film-that-directs-itself)
+and [`docs/INFINITY.md`](docs/INFINITY.md).
+
+**Pulse Infinity Loop** is the session. It is identified by its `session` name,
+under `ComfyUI/output/pulse_infinity/`.
+- Widgets: `story_goal`, `world` (standing direction), an optional
+  `opening_beat`, `max_beats` (0 for open-ended), `director_backend`, a
+  `script` for the scripted director, and `dialogue_mode`.
+- Inputs: the `cast` sockets (Pulse Characters).
+- Outputs: the `infinity` handle, a per-beat `seed`, `tts_text` (the line in
+  Fish S2's `[delivery] text` form), `speaker_voice`, and `status`.
+
+**Pulse Dynamic Shot** turns the planned beat into a Pulse Shot payload for the
+slate.
+- It carries the camera, the action, the continuity anchors and the quoted
+  line bound to its speaker.
+- It continues the last beat unless the director cut.
+- A lazy `dialogue_audio` input runs a TTS node only on beats that speak.
+
+**Pulse Infinity Render** is Pulse Render pinned to the session's beat folder.
+- It continues the previous beat.
+- `audio_mode` and `reference_audio` are `auto`: the beat locks and muxes a TTS
+  take when it carries one.
+
+**Pulse Observer** is an output node.
+- It shows the director five stills, the last frame and a contact sheet of the
+  beat (or lip-sync-corrected frames).
+- It commits the observation, stores the next plan and rebuilds the reel.
+- It commits each beat once, however many times ComfyUI runs it.
+
 ## Architecture
 
 ```
@@ -1049,6 +1138,17 @@ Developed with assistance from Claude, Anthropic's AI assistant.
 ---
 
 ## Credits
+
+Pulse Studio Infinity's closed loop adapts ideas published in Video-Rebirth's
+[HyperFlow Infinity](https://github.com/Video-Rebirth/hyperflow-infinity):
+- scene-graph memory deltas;
+- rejecting a beat that restates an earlier one;
+- scene budgets;
+- stagnation detection;
+- retrying with the rejection reason;
+- journaled director calls.
+
+No code or prompt text from that project is included; see [NOTICE](NOTICE).
 
 This project is a fork of
 [muse-collective-26/MiniMaxH3-Director-Seed-Hunt](https://github.com/muse-collective-26/MiniMaxH3-Director-Seed-Hunt),

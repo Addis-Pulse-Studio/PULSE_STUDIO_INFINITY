@@ -18,6 +18,13 @@ recursive-include example_workflows *.json
 recursive-include example_workflows/assets *.png *.wav
 include tools/make_example_assets.py
 
+# Pulse Studio Infinity: the example config, the director's desk tool, and the
+# workspace kit tools/setup_director_workspace.py installs for an agent.
+include pulse_infinity.example.yaml
+include tools/pulse_desk.py
+include tools/setup_director_workspace.py
+recursive-include director_workspace *.md
+
 # The GPL-3.0 reference tree is reviewed for feature ideas only; code from it
 # would relicense this whole project. .gitignore keeps it out of git, which is
 # not the same as keeping it out of a build. See NOTICE.
