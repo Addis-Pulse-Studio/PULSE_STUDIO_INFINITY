@@ -78,6 +78,15 @@ model download and no external asset or webfont.
 The web extension must not call `fetch` or `XMLHttpRequest` against an absolute
 origin. Both rules are enforced by tests in CI.
 
+Starting a process is permitted in exactly one module,
+`comfyui_pulse_studio/pulse_director/cli_transport.py`: it runs a Pulse Infinity
+director's own CLI (`ollama`, `pi`, `claude -p`, `gemini -p`) with no shell and the
+prompt on stdin. `tests/test_infinity_directors.py` fails on `subprocess`,
+`os.system`, `os.popen`, `os.spawn*` or an asyncio subprocess anywhere else. Agent
+directors (Claude Code, Antigravity) are reached through files, never a socket;
+a cloud agent reading those files is the user's choice, and the node report says
+when one is active.
+
 ## The slot contract
 
 LiteGraph serialises widget values and link endpoints by position. Widget

@@ -35,6 +35,16 @@ URL *strings* in Python. Without an HTTP client in the package a URL literal
 cannot do anything, and the fork's upstream repository address legitimately
 appears in a module docstring. The import ban is the load-bearing half.
 
+WHAT PULSE INFINITY ADDS, AND WHERE IT IS GUARDED
+
+Its director may be a local model behind a CLI (`ollama run`, `pi -p`), so the
+pack starts processes -- in one module, `pulse_director/cli_transport.py`, with no
+shell. That is not egress by this pack: the CLI talks to its own model. The
+confinement is tested in tests/test_infinity_directors.py, next to the code it
+guards. Agent directors read and write a folder of files; when the user points a
+cloud agent at that folder, the agent -- not the pack -- carries the frames out,
+and the README says so.
+
 SCOPE
 
 The shipped package only. `tests/` and `.github/` are excluded by design --

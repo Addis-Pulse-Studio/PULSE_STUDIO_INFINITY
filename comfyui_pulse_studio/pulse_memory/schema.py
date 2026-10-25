@@ -664,18 +664,21 @@ class TurnResponse:
     """One director turn: what the last beat showed, and the next beat.
 
     The opening turn has nothing to observe, so `observation` is optional there
-    and required on every turn after it.
+    and required on every turn after it. An observe-only turn (the spec's
+    `inspect_shot` asked on its own) has no plan.
     """
 
     __slots__ = ("observation", "plan")
 
-    def __init__(self, plan: DirectedShotPlan,
+    def __init__(self, plan: Optional[DirectedShotPlan],
                  observation: Optional[ObservationResult] = None) -> None:
         self.plan = plan
         self.observation = observation
 
     def to_dict(self) -> dict:
-        out = {"plan": self.plan.to_dict()}
+        out = {}
+        if self.plan is not None:
+            out["plan"] = self.plan.to_dict()
         if self.observation is not None:
             out["observation"] = self.observation.to_dict()
         return out

@@ -273,6 +273,16 @@ allowed — that is ComfyUI's own server, and answering the frontend is not egre
 
 Everything you drop in the bin stays on your machine.
 
+**Pulse Infinity's director is the one exception, and only if you choose it.** The
+pack still opens no socket: Claude Code and Antigravity direct through a folder of
+files (the Director Desk), and Ollama and pi through their own command lines,
+started with no shell from one module that a test confines process creation to.
+But directing means looking: a cloud agent you point at a session folder reads the
+evidence frames it finds there, so with `claude_code` or `gemini_antigravity`
+active, those frames leave the machine *through that agent*. `ollama`, `pi` on a
+local model, and `scripted` keep everything local. The Loop Controller's report
+names the active director and says which kind it is.
+
 ## Known issues
 
 - **Workflows saved by any pre-2.0.0 build will not load.** Widget order changed
