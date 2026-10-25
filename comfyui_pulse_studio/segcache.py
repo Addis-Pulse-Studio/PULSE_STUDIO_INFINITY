@@ -38,7 +38,6 @@ behaviour in §7.5 is testable on a machine with no GPU by stubbing the sampler.
 
 import json
 import os
-import tempfile
 
 from .assets import KIND_AUDIO
 from .constants import (
@@ -48,6 +47,7 @@ from .constants import (
     BRANCH_FL2VA,
     DEFAULT_REMIX_STRENGTH,
 )
+from .durable import write_text_durably
 from .pulse_timeline import canonical_json, shots_of_window
 
 __all__ = [
@@ -405,23 +405,7 @@ class Manifest:
             self.data["updated_utc"] = updated_utc
         os.makedirs(self.directory, exist_ok=True)
         payload = json.dumps(self.data, indent=2, sort_keys=True)
-
-        handle, temp_path = tempfile.mkstemp(dir=self.directory, prefix=".manifest-",
-                                             suffix=".json")
-        try:
-            with os.fdopen(handle, "w", encoding="utf-8") as fh:
-                fh.write(payload)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(temp_path, self.path)
-        except Exception:
-            try:
-                os.unlink(temp_path)
-            except OSError:  # pragma: no cover
-                pass
-            raise
-        _fsync_dir(self.directory)
-        return self.path
+        return write_text_durably(self.path, payload, prefix=".manifest-", suffix=".json")
 
     # ── timing (§9.6, §12.5) ────────────────────────────────────────────────
 
@@ -434,20 +418,6 @@ class Manifest:
         out and recorded separately.
         """
         return seconds_per_frame(self.segments)
-
-
-def _fsync_dir(directory):
-    """fsync a directory so a rename is durable. No-op where unsupported."""
-    try:
-        fd = os.open(directory, os.O_RDONLY)
-    except (OSError, AttributeError):  # pragma: no cover - Windows
-        return
-    try:
-        os.fsync(fd)
-    except OSError:  # pragma: no cover - filesystems that refuse
-        pass
-    finally:
-        os.close(fd)
 
 
 def seconds_per_frame(segments):
