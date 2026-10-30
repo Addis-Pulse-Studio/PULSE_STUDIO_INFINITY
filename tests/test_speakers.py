@@ -212,11 +212,20 @@ class TestTheAudioRetentionLine(unittest.TestCase):
 
     def test_lip_sync_is_fully_copy(self):
         prompt = _compile(_two_hander()).windows[0].prompt
-        self.assertIn("`<Audio 1>` (the voice of <Subject 1> (S1)): fully_copy", prompt)
+        self.assertIn("`<Audio 1>` (the voice of <Subject 1>): fully_copy", prompt)
 
     def test_timbre_is_reference(self):
         prompt = _compile(_two_hander()).windows[0].prompt
-        self.assertIn("`<Audio 2>` (the voice of <Subject 2> (S2)): reference", prompt)
+        self.assertIn("`<Audio 2>` (the voice of <Subject 2>): reference", prompt)
+
+    def test_no_speaker_id_is_written_in_retention_analysis(self):
+        """MiniMax's reference guide: "Do not write (Sx) in retention_analysis".
+        The ids stay where the vocal events are -- the definitions and the shots."""
+        prompt = _compile(_two_hander()).windows[0].prompt
+        section = prompt.split("retention_analysis:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertNotIn("(S1)", section)
+        self.assertNotIn("(S2)", section)
+        self.assertIn("<Subject 1> (S1)", prompt.split("retention_analysis:", 1)[0])
 
     def test_every_visual_retention_line_still_precedes_every_audio_one(self):
         """The order MiniMax's worked example uses, whatever order the sockets

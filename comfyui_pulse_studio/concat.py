@@ -48,6 +48,7 @@ import math
 
 __all__ = ["video_shifts", "video_is_gapless", "frame_duration",
            "audio_span_bounds", "audio_span_report", "gate_bounds", "upscale_size",
+           "upscale_engine", "rtx_upscale_problem", "RTX_MAX_SCALE",
            "seam_dip_samples", "seam_dip_gains",
            "seam_gain_match", "SEAM_FADE_MS_DEFAULT",
            "SEAM_FADE_MS_MIN", "SEAM_FADE_MS_MAX"]
@@ -286,6 +287,20 @@ def _even(value, up=False):
     return n + (n % 2)
 
 
+#: Delivery canvases by height, as (long edge, short edge).
+_DELIVERY = {"1080p": (1920, 1080), "1440p": (2560, 1440), "2160p": (3840, 2160)}
+
+#: How far RTX Video Super Resolution is asked to enlarge. NVIDIA's own ComfyUI
+#: node offers it from 1x to 4x; past that a film goes through Lanczos.
+RTX_MAX_SCALE = 4.0
+
+
+def _up_to(value, step):
+    """The smallest multiple of `step` at or above `value`."""
+    n = int(math.ceil(value - 1e-9))
+    return n + (-n % step)
+
+
 def upscale_size(width, height, mode):
     """(scaled_w, scaled_h, out_w, out_h) for an upscale mode, or None for 'off'.
 
@@ -293,9 +308,14 @@ def upscale_size(width, height, mode):
     (out_w, out_h); for '1080p_fit' the two are the same and nothing is cut.
 
       1080p_fit    short edge 1080, aspect kept: 1344x768 -> 1890x1080.
-      1080p_exact  1920x1080 landscape, 1080x1920 portrait, 1080x1080 square --
+      <h>_exact    1080p 1920x1080, 1440p 2560x1440, 2160p 3840x2160 landscape,
+                   turned for portrait, the short edge squared for square --
                    scaled to cover and cropped, so 1344x768 loses 9 rows top and
-                   bottom of 1098 rather than gaining bars.
+                   bottom of 1098 at 1080p rather than gaining bars. Lanczos.
+      <h>_rtx      the same canvases through RTX Video Super Resolution. Its
+                   output is a multiple of 8 on each side, so the cover is
+                   rounded up to one before the crop: 1344x768 -> 3840x2200 ->
+                   3840x2160.
     """
     width, height = int(width), int(height)
     if mode in (None, "", "off") or width <= 0 or height <= 0:
@@ -304,14 +324,41 @@ def upscale_size(width, height, mode):
         scale = 1080.0 / min(width, height)
         w, h = _even(width * scale), _even(height * scale)
         return w, h, w, h
-    if mode == "1080p_exact":
+    target, _, engine = str(mode).partition("_")
+    if target in _DELIVERY and engine in ("exact", "rtx"):
+        long_edge, short_edge = _DELIVERY[target]
         if width > height:
-            out_w, out_h = 1920, 1080
+            out_w, out_h = long_edge, short_edge
         elif height > width:
-            out_w, out_h = 1080, 1920
+            out_w, out_h = short_edge, long_edge
         else:
-            out_w, out_h = 1080, 1080
+            out_w, out_h = short_edge, short_edge
         scale = max(out_w / float(width), out_h / float(height))
-        return (max(out_w, _even(width * scale, up=True)),
-                max(out_h, _even(height * scale, up=True)), out_w, out_h)
-    raise ValueError("upscale must be off, 1080p_fit or 1080p_exact, got %r" % (mode,))
+        step = 8 if engine == "rtx" else 2
+        return (max(out_w, _up_to(width * scale, step)),
+                max(out_h, _up_to(height * scale, step)), out_w, out_h)
+    raise ValueError("upscale must be off, 1080p_fit, or 1080p/1440p/2160p with _exact "
+                     "or _rtx, got %r" % (mode,))
+
+
+def upscale_engine(mode):
+    """"rtx" for an `_rtx` mode, which asks for RTX Video Super Resolution, else
+    "lanczos". What actually ran is the report's to say: an `_rtx` mode falls back."""
+    return "rtx" if str(mode or "").endswith("_rtx") else "lanczos"
+
+
+def rtx_upscale_problem(width, height, scaled_w, scaled_h):
+    """Why RTX Video Super Resolution should not take this resize, or None.
+
+    It enlarges, and NVIDIA's own node offers it up to RTX_MAX_SCALE. A film that
+    would not grow, or would grow past that, goes through Lanczos instead, and
+    the reason is what the report says.
+    """
+    scale = max(scaled_w / float(width), scaled_h / float(height))
+    if scale <= 1.0:
+        return ("RTX Video Super Resolution only enlarges, and %dx%d is already at or "
+                "past %dx%d" % (width, height, scaled_w, scaled_h))
+    if scale > RTX_MAX_SCALE + 1e-9:
+        return ("RTX Video Super Resolution is offered up to %gx, and %dx%d to %dx%d "
+                "is %.2fx" % (RTX_MAX_SCALE, width, height, scaled_w, scaled_h, scale))
+    return None

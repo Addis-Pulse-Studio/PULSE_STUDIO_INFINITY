@@ -962,7 +962,11 @@ def run(timeline_dict, side, model, vae, audio_vae, model_fl2va=None,
         window_model = (shifted_fl2va
                         if (compiled.branch == BRANCH_FL2VA and shifted_fl2va is not None)
                         else shifted)
-        if compiled.branch == BRANCH_FL2VA and shifted_fl2va is None:
+        # A film wholly on fl2va (text_to_video) has one checkpoint, and it is the
+        # one on `model`. Only a film that also has reference windows sampled this
+        # window on the reference checkpoint.
+        if (compiled.branch == BRANCH_FL2VA and shifted_fl2va is None
+                and any(w.get("branch") != BRANCH_FL2VA for w in windows_doc)):
             warnings.append(
                 "window %d uses the fl2va branch but model_fl2va is not connected; it "
                 "sampled on the reference checkpoint instead. Expect a soft seam."
@@ -1129,13 +1133,21 @@ def run(timeline_dict, side, model, vae, audio_vae, model_fl2va=None,
             if joined:
                 video = media.video_from_file(joined)
                 if options.upscale != UPSCALE_OFF:
+                    how = {}
                     upscaled = media.upscale_video(
                         joined, os.path.join(directory, "assembled_%s.mp4" % options.upscale),
-                        options.upscale)
+                        options.upscale, report=how)
                     if upscaled:
                         video = media.video_from_file(upscaled)
-                        log.info("[PulseStudio] upscaled the film to %s -> %s",
-                                 options.upscale, upscaled)
+                        log.info("[PulseStudio] upscaled the film to %s with %s -> %s",
+                                 options.upscale,
+                                 "RTX Video Super Resolution"
+                                 if how.get("engine") == "rtx_vsr" else "Lanczos",
+                                 upscaled)
+                        if how.get("fallback"):
+                            warnings.append(
+                                "upscale %s was resampled with Lanczos, not RTX Video "
+                                "Super Resolution: %s." % (options.upscale, how["fallback"]))
                     else:
                         warnings.append(
                             "upscale %s failed, so the film is at its rendered size; "

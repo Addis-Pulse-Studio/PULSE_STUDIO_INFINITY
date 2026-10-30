@@ -40,7 +40,13 @@ from comfyui_pulse_studio.pulse_director import (
     render_prompt,
     run_turn,
 )
-from comfyui_pulse_studio.pulse_director.cli_transport import CliResult, build_argv, run_cli
+from comfyui_pulse_studio.pulse_director.cli_transport import (
+    CliResult,
+    build_argv,
+    run_cli,
+    run_lines,
+    spawn_detached,
+)
 from comfyui_pulse_studio.pulse_director.mailbox import MAX_RESPONSE_BYTES
 from comfyui_pulse_studio.pulse_memory import DirectedShotPlan, SceneMemory
 
@@ -503,9 +509,99 @@ class TestTheCli(unittest.TestCase):
         self.assertIn("not on PATH", str(caught.exception))
 
 
+class TestLongJobs(unittest.TestCase):
+    """run_lines and spawn_detached: what Pulse Resolve Super Scale runs Resolve with.
+    Real child processes, standing in for Resolve's Python and for Resolve."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_each_line_arrives_in_order_as_it_is_printed(self):
+        seen = []
+        talker = [sys.executable, "-c",
+                  "import sys\n"
+                  "for p in (10, 55, 100): print('  %d%%' % p, flush=True)\n"
+                  "print('ጊዜው ቆሟል')\n"
+                  "print('the end', file=sys.stderr)"]
+        result = run_lines(talker, seen.append, timeout=30)
+        self.assertEqual(seen, ["  10%", "  55%", "  100%", "ጊዜው ቆሟል"])
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.splitlines()[-1], "ጊዜው ቆሟል")
+        self.assertIn("the end", result.stderr)
+
+    def test_a_failing_line_reader_never_stops_the_job(self):
+        def broken(line):
+            raise ValueError("a progress bar that broke")
+        result = run_lines([sys.executable, "-c", "print('a'); print('b')"], broken, timeout=30)
+        self.assertEqual(result.stdout.splitlines(), ["a", "b"])
+
+    def test_a_cancel_asks_first_and_the_job_may_stop_by_itself(self):
+        flag = os.path.join(self.root, "stop")
+        polite = [sys.executable, "-c",
+                  "import os, sys, time\n"
+                  "while not os.path.exists(sys.argv[1]): time.sleep(0.05)\n"
+                  "print('stopped cleanly', flush=True)", flag]
+        asked, seen = [], []
+
+        def ask():
+            asked.append(True)
+            open(flag, "w").close()
+
+        started = time.monotonic()
+        with self.assertRaises(DirectorCancelled):
+            run_lines(polite, seen.append, timeout=60, should_cancel=lambda: True,
+                      on_cancel=ask, grace=30, poll=0.05)
+        self.assertEqual(asked, [True])
+        self.assertEqual(seen, ["stopped cleanly"])
+        self.assertLess(time.monotonic() - started, 20, "it waited out the grace period")
+
+    def test_a_job_that_ignores_the_cancel_is_killed_after_the_grace(self):
+        deaf = [sys.executable, "-c", "import time; time.sleep(60)"]
+        asked = []
+        started = time.monotonic()
+        with self.assertRaises(DirectorCancelled):
+            run_lines(deaf, lambda line: None, timeout=0, should_cancel=lambda: True,
+                      on_cancel=lambda: asked.append(True), grace=0.5, poll=0.05)
+        self.assertEqual(asked, [True])
+        self.assertLess(time.monotonic() - started, 20)
+
+    def test_a_hung_job_is_killed_at_the_timeout(self):
+        sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
+        started = time.monotonic()
+        with self.assertRaises(DirectorTimeout):
+            run_lines(sleeper, lambda line: None, timeout=1, poll=0.1)
+        self.assertLess(time.monotonic() - started, 20)
+
+    def test_a_full_path_that_is_not_there_is_named(self):
+        missing = os.path.join(self.root, "ResolvePython.exe")
+        for call in (lambda: run_lines([missing], lambda line: None),
+                     lambda: spawn_detached([missing])):
+            with self.assertRaises(DirectorError) as caught:
+                call()
+            self.assertIn("does not exist", str(caught.exception))
+            self.assertNotIn("director", str(caught.exception))
+
+    def test_a_detached_program_outlives_the_call(self):
+        mark = os.path.join(self.root, "alive")
+        program = [sys.executable, "-c",
+                   "import sys, time; time.sleep(1); open(sys.argv[1], 'w').close()", mark]
+        started = time.monotonic()
+        process = spawn_detached(program)
+        self.assertLess(time.monotonic() - started, 1, "spawn_detached waited for it")
+        self.assertIsNone(process.poll())
+        process.wait(timeout=30)
+        self.assertTrue(os.path.exists(mark))
+
+
 class TestOnlyOneModuleStartsProcesses(unittest.TestCase):
-    """The pack is socket-free because its director CLIs are the only thing it
-    runs, and they are run in one place. A second place is a second policy."""
+    """The pack is socket-free because the programs it runs -- its director CLIs,
+    and DaVinci Resolve for Pulse Resolve Super Scale -- talk to their models and
+    to Resolve themselves, and they are all run in one place. A second place is a
+    second policy."""
 
     ALLOWED = {"comfyui_pulse_studio/pulse_director/cli_transport.py"}
     EXCLUDED = {"tests", ".github", "__pycache__", ".git", ".venv", "venv",

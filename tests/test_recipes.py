@@ -12,6 +12,7 @@ import unittest
 from comfyui_pulse_studio.constants import BRANCH_FL2VA, BRANCH_REF2VA
 from comfyui_pulse_studio.pulse_timeline import build_timeline, global_block, window_block
 from comfyui_pulse_studio.recipes import (
+    PIKA_FLEX_6STEP_SIGMAS,
     RECIPE_NAMES,
     TAOMATE_3STEP_SIGMAS,
     RecipeError,
@@ -42,6 +43,32 @@ class ThePresets(unittest.TestCase):
     def test_hyperflow_is_its_scheduler_at_eight(self):
         r = make_recipe("hyperflow_8step")
         self.assertEqual((r["steps"], r["scheduler"], r["sampler"]), (8, "hyperflow", "euler"))
+
+    def test_pika_is_lcm_on_its_six_interval_schedule(self):
+        r = make_recipe("pika_h3_flex_6step")
+        self.assertEqual((r["steps"], r["sampler"], r["cfg"]), (6, "lcm", 1.0))
+        self.assertEqual(r["sigmas"], [1.0, 0.972973, 0.923077, 0.8, 0.571429, 0.333333, 0.0])
+        self.assertEqual(tuple(r["sigmas"]), PIKA_FLEX_6STEP_SIGMAS)
+
+    def test_pika_is_knots_1000_to_0_under_shift_12(self):
+        # Pika's README: timestep knots 1000/750/500/250/100/40/0 at video shift 12.
+        shift = 12.0
+        for t, sigma in zip((1.0, 0.75, 0.5, 0.25, 0.1, 0.04, 0.0), PIKA_FLEX_6STEP_SIGMAS):
+            self.assertAlmostEqual(shift * t / (1 + (shift - 1) * t), sigma, places=6)
+
+    def test_lcm_is_offered_by_the_sampler_combo(self):
+        # nodes.py imports torch, so SAMPLERS is read by ast, not imported.
+        import ast
+        from pathlib import Path
+
+        tree = ast.parse((Path(__file__).parent.parent / "nodes.py").read_text(encoding="utf-8"))
+        assign = next(n for n in tree.body if isinstance(n, ast.Assign)
+                      and any(getattr(t, "id", None) == "SAMPLERS" for t in n.targets))
+        samplers = ast.literal_eval(assign.value)
+        self.assertIn("lcm", samplers)
+        # Appended, never inserted: every sampler a saved graph names keeps its place.
+        self.assertEqual(samplers[:6], ["res_multistep", "euler", "euler_ancestral",
+                                        "dpmpp_2m", "dpmpp_2m_sde", "ddim"])
 
     def test_a_preset_ignores_the_custom_widgets(self):
         self.assertEqual(make_recipe("fasth3_omni_8step", steps=30, sampler="ddim")["steps"], 8)
@@ -99,6 +126,25 @@ class WhatIsWarned(unittest.TestCase):
         self.assertIn("fl2va LoRA", notes)
         self.assertEqual(recipe_warnings(make_recipe("taomate_fl2va_3step"), {"lora": True},
                                          BRANCH_FL2VA), [])
+
+    def test_pika_without_a_lora_and_pika_on_hyperflow(self):
+        pika = make_recipe("pika_h3_flex_6step")
+        self.assertTrue(any("no LoRA" in n for n in recipe_warnings(pika, {}, BRANCH_REF2VA)))
+        notes = " ".join(recipe_warnings(pika, {"lora": True, "hyperflow": True}, BRANCH_FL2VA))
+        self.assertIn("two different distillations", notes)
+
+    def test_pika_with_its_lora_is_quiet_on_either_branch(self):
+        pika = make_recipe("pika_h3_flex_6step")
+        for branch in (BRANCH_REF2VA, BRANCH_FL2VA):
+            with self.subTest(branch=branch):
+                self.assertEqual(recipe_warnings(pika, {"lora": True, "curve_form": True},
+                                                 branch), [])
+
+    def test_pika_on_a_fasth3_student_is_named(self):
+        notes = " ".join(recipe_warnings(make_recipe("pika_h3_flex_6step"),
+                                         {"pdd_heads": 32, "vsa": True, "lora": True},
+                                         BRANCH_REF2VA))
+        self.assertIn("fasth3_omni_8step", notes)
 
 
 class WhichRecipeAWindowGets(unittest.TestCase):

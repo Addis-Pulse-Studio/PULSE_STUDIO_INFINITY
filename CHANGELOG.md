@@ -4,6 +4,143 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Pika H3 Flex: `lcm` and a six-step recipe
+
+Pika H3 Flex samples six steps with a fresh noise draw between them, which is
+ComfyUI's `lcm`, on its own schedule, and its README says plain six-step Euler
+is not the same. Pulse's sampler list had no `lcm`, so the only way to reach it
+was a Text → Get Item From List bridge wired into Pulse Recipe.
+
+- `lcm` is appended to the sampler list that the slate, Pulse Recipe's `custom`,
+  Retake and Still share. It is appended, so every value a saved graph holds
+  keeps its place.
+- Pulse Recipe has a `pika_h3_flex_6step` preset: 6 · lcm · sigmas
+  `1.0, 0.972973, 0.923077, 0.8, 0.571429, 0.333333, 0.0` (Pika's timestep knots
+  1000/750/500/250/100/40/0 at shift 12), cfg 1, on either branch.
+- The report names the preset when the model has no LoRA, and when it also
+  carries HyperFlow, which is a different distillation.
+
+The preset samples exactly what the bridge did. It just removes the bridge.
+
+### The compiled prompt follows MiniMax's own guides
+
+These were checked against MiniMax's two prompt-writing guides
+(`docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md` and `..._base_en.md` on
+huggingface.co/MiniMaxAI/MiniMax-H3) and against Pika's prompt guidance, which
+repeats them. The compiler used to phrase five things its own way:
+
+- A reference window's summary opens with the guide's task-type prefix. That is
+  `reference generation`, joined with ` + ` to `video continuation`,
+  `keyframe completion`, `audio reuse` or `audio reference` when the window has
+  them. It used to open with `[window 2 of 4]`, and a one-window film had no
+  prefix at all.
+- `retention_analysis` names a voice's owner without the speaker id. The guide
+  says "Do not write (Sx) in retention_analysis"; the ids stay in the
+  definitions and the shots.
+- A picture kept in part is `partially_preserved`. `partially_copy` is the
+  guide's audio word. The bin and Pulse Character still store `partially_copy`,
+  and the compiler translates it where it reaches the model.
+- A First/Last-Frame window opens with the guide's image-alignment sentence. It
+  is one of the guide's three templates, on its own line, then a blank line. Its
+  end mark is the window's length to two decimals, and the last frame is
+  credited to the window's last shot. "Continue the ongoing action …" moved into
+  the description.
+- The recorded-voice lip-sync note moved out of `overall_soundscape` ("Dialogue,
+  lip-sync instructions … do not belong here"). It now sits in the description,
+  after the shots it covers.
+
+A segment whose prompt changed re-renders once. `tests/test_prompt_format.py`
+pins the layout.
+
+### `text_to_video` continuity
+
+`text_to_video` is a new project continuity mode for a film made on fl2va from
+the words alone. Window 1 is unpinned unless shot 1 has a `start_image`, and each
+later window opens on the previous window's last frame.
+
+- It needs no `model_fl2va`: the film's one checkpoint goes on `model`.
+- It refuses a bin, with a message that names the mode.
+- It replaces the hidden `"branch": "fl2va"` that the first T2V graphs typed
+  into `timeline_data`. That key still compiles, to the same windows.
+- The PulseShot combo is unchanged, because a film's branch is not a per-shot
+  setting.
+
+The branch mapping moved into `pulse_timeline.continuity_branches`, where a test
+can reach it. Pulse Render no longer warns that an all-fl2va film "sampled on
+the reference checkpoint": a film with no reference windows has no other
+checkpoint to have used.
+
+### Delivering at 2K and 4K
+
+Pulse Render's `upscale` used to stop at 1080 and resampled with Lanczos only.
+
+- It now delivers 1440 and 2160 as well. `1440p_exact` and `2160p_exact` use
+  Lanczos.
+- `1080p_rtx`, `1440p_rtx` and `2160p_rtx` use NVIDIA's RTX Video Super
+  Resolution: `nvvfx` (which NVIDIA's ComfyUI RTX nodes install), at quality
+  ULTRA, on the GPU, one frame at a time. That is a learned upscale where Lanczos
+  is a resample.
+- All the new modes are appended to the combo, and each covers its canvas and
+  centre-crops, as `1080p_exact` always has. The RTX canvas is rounded up to a
+  multiple of 8 before the crop.
+- An `_rtx` mode that can't run resamples with Lanczos instead, and the report
+  says why. That happens with no `nvvfx`, no CUDA device, a jump past 4×, or an
+  SDK error.
+
+`tools/resolve_superscale.py`, with a drag-and-drop `.bat`, is the other route:
+DaVinci Resolve Studio's Super Scale, after the render.
+
+- It builds a throwaway project with a timeline at the same canvas, input sizing
+  `scaleToCrop`.
+- It sets Super Scale on the clip and renders MP4 H.265 with the audio, then
+  deletes the project. `auto` is 2× Enhanced, with Resolve's resize covering up
+  to 1.5× more: on a Pulse frame taken to 4K it kept as much fine detail as RTX
+  VSR and came back closer to the source than plain 3×, 4×, RTX or Lanczos (the
+  table is in the README). A smaller film gets 3× or 4×.
+- It renders with Resolve's own H.265 encoder rather than NVIDIA's. Through the
+  API Resolve takes no quality setting for an MP4 codec, so the encoder sets the
+  bitrate, and at 4K its own wrote 34 Mbit/s to NVIDIA's 22.
+- It imports with a plain list of paths. Resolve 21.1.1 imports nothing from the
+  `[{"FilePath": ...}]` form its README recommends instead.
+- It runs under Resolve's own Python. The `.bat` starts Resolve headless when it
+  isn't running.
+- It talks only to the local Resolve, through Resolve's scripting module, and it
+  opens nothing itself. The pack's network and process scans cover it like every
+  other file.
+
+`.gitattributes` checks `*.bat` out with CRLF.
+
+### Pulse Resolve Super Scale: Resolve's upscale in the graph
+
+The `.bat` meant a second step after every render. **Pulse Resolve Super Scale**
+is the same Super Scale as a node: wire Pulse Render's `video` into it, and the
+2K or 4K film comes back in the same queue run.
+
+- It runs the helper under Resolve's own Python, as a child process. ComfyUI
+  never loads Resolve's scripting library. ComfyUI runs Python 3.11, the
+  library is driven from Resolve's 3.14 and links Windows' socket library, and a
+  crash in it would take the server down.
+- It frees the GPU first. With ComfyUI-Memory-Reclaim installed, that is its
+  All Models + Hard purge, and the before/after numbers go into the report.
+  Without it, ComfyUI's own unload.
+- It starts Resolve headless when it isn't running, and quits it afterwards
+  (`when_done`). A Resolve you had open is left alone.
+- When Pulse Render's own `upscale` already enlarged the film, it sends the
+  native `assembled.mp4` instead. It writes beside the film, and refuses a film
+  that already fills the canvas.
+- The helper's `NN%` lines drive the progress bar. Cancel reaches the helper
+  through a new `--stop-file`. The helper then stops Resolve's render, removes
+  the unfinished file, deletes its project and quits Resolve.
+- The node checks that the file it hands on was written by this run. A Resolve
+  that wrote its film under another name cannot pass the old film off as new.
+- A failed render's unfinished file is removed too, but only a file that render
+  wrote, never an older film with the same name.
+- The decisions are pure functions in `comfyui_pulse_studio/resolve_bridge.py`,
+  and the helper takes its target, mode and codec lists from there.
+- Processes still start in one module, `pulse_director/cli_transport.py`. It
+  gains `spawn_detached` and `run_lines`.
+- `MANIFEST.in` ships the helper and the `.bat`.
+
 ### Pulse Studio Infinity — a film that directs itself
 
 A third path, alongside one window and many: an adaptive closed loop. H3 renders
@@ -957,6 +1094,26 @@ until somebody writes down what they saw.
 - [ ] **The 1080 delivery, looked at.** The upscale was run on real files (sizes,
       frame count and audio checked), not watched.
 - [ ] **`ref_guided_carry` and `keep_aspect`** on a real render.
+- [ ] **Pika H3 Flex through Pulse Render.** The preset's numbers are Pika's
+      README and Comfy-Org's templates, and the nine `PS_PikaFlex_*` graphs
+      compile with them. None has sampled a frame.
+- [ ] **The guides' prompt layout, rendered.** The layout is MiniMax's own. No
+      one has rendered a window against the old layout to see whether H3 does
+      better with it.
+- [ ] **`text_to_video` on a real render.** Asserted on the compiled plan:
+      window 1 unpinned, later windows on the carried frame, the same windows as
+      the hidden key. Nobody has watched it.
+- [ ] **RTX Video Super Resolution on a real film.** On the RTX 5090
+      (2026-10-30) the `nvvfx` path delivered a 12-frame test clip at 2560×1440
+      and 3840×2160 (`rtx_vsr`, 2 s for the 4K pass once loaded), within 36 dB
+      PSNR of Lanczos. The Lanczos fallback ran on real files for both of its
+      reasons. A 4-second cut of a rendered film has been taken to 4K with it
+      and compared by eye with Lanczos and Super Scale; a whole film has not.
+- [x] **Resolve Super Scale, run** (2026-10-30, DaVinci Resolve Studio
+      21.1.1.10, headless). It took a 30 s Pulse film to 3840×2160, all 724
+      frames with the audio, in 16 s. The `.bat` started Resolve, rendered and
+      quit it, in 43 s. Headless Resolve opens "Untitled Project", so none of
+      yours is touched.
 
 ## [3.0.0] — 2026-08-10
 

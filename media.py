@@ -1019,36 +1019,132 @@ def _remux_concat(paths, out_path, frame_counts, fps=24, audio=None):
 
 # ── 1080 output ─────────────────────────────────────────────────────────────
 
-def upscale_video(src, dst, mode, crf=16):
-    """Resample a finished film to 1080 with Lanczos, one frame at a time.
+class _RtxUnavailable(RuntimeError):
+    """RTX Video Super Resolution cannot take this film; the message says why."""
+
+
+class _RtxEnlarger:
+    """One RTX Video Super Resolution effect, loaded once for the whole film.
+
+    A decoded frame goes in and an HxWx3 uint8 array at the effect's output size
+    comes out: rgb24, then CUDA CHW float in [0, 1] (what nvvfx takes), then back.
+    The output capsule is NVIDIA's own buffer, overwritten by the next call, so it
+    is cloned before anything else touches it. Quality ULTRA: the AI upscale that
+    keeps the most detail, the default of NVIDIA's own ComfyUI node.
+    """
+
+    def __init__(self, width, height, out_w, out_h):
+        problem = _concat.rtx_upscale_problem(width, height, out_w, out_h)
+        if problem:
+            raise _RtxUnavailable(problem)
+        try:
+            import nvvfx
+        except ImportError:
+            raise _RtxUnavailable(
+                "nvvfx is not installed; NVIDIA's RTX nodes for ComfyUI install it "
+                "(pip install nvidia-vfx)") from None
+        if not torch.cuda.is_available():
+            raise _RtxUnavailable("RTX Video Super Resolution needs a CUDA device")
+        self._device = torch.cuda.current_device()
+        self._effect = nvvfx.VideoSuperRes(nvvfx.VideoSuperRes.QualityLevel.ULTRA,
+                                           device=self._device)
+        try:
+            self._effect.output_width = out_w
+            self._effect.output_height = out_h
+            self._effect.load()
+        except Exception:
+            self._effect.close()
+            raise
+
+    def __call__(self, frame):
+        rgb = torch.from_numpy(frame.to_ndarray(format="rgb24"))
+        chw = (rgb.to(torch.device("cuda", self._device)).permute(2, 0, 1)
+               .float().div_(255.0).contiguous())
+        out = torch.from_dlpack(self._effect.run(chw).image).clone()
+        return (out.clamp_(0.0, 1.0).mul_(255.0).round_().to(torch.uint8)
+                .permute(1, 2, 0).contiguous().cpu().numpy())
+
+    def close(self):
+        self._effect.close()
+
+
+def _discard(path):
+    try:
+        if path and os.path.exists(path):
+            os.unlink(path)
+    except OSError:  # pragma: no cover
+        pass
+
+
+def upscale_video(src, dst, mode, crf=16, report=None):
+    """Deliver a finished film at 1080, 1440 or 2160, one frame at a time.
+
+    `_fit` and `_exact` resample with Lanczos. `_rtx` runs each frame through
+    NVIDIA's RTX Video Super Resolution on the GPU, a model trained to restore
+    detail on the way up; it still cannot add what H3 never drew. Where that
+    cannot run -- nvvfx missing, no CUDA, a resize it does not cover, an SDK error
+    part-way -- the film is resampled with Lanczos instead rather than left at
+    its rendered size, and `report` says why.
 
     The audio is copied packet for packet -- it was encoded once at assembly and
     is not touched again. Memory is one decoded frame, whatever the film's
     length, which is why this runs on the assembled file rather than on the
     frame stack: a 60-second film at 1890x1080 is 9 GB of float frames.
 
-    A resample adds no detail the render did not have; it is what makes the file
-    1080 for delivery. Returns `dst`, or "" if there was nothing to do or it failed
-    (the native assembly is untouched either way).
+    `report`, when given, is filled in: `engine` ("rtx_vsr" or "lanczos") and,
+    when an `_rtx` mode fell back, `fallback` -- the reason. Returns `dst`, or ""
+    if there was nothing to do or it failed (the native assembly is untouched
+    either way).
     """
+    report = {} if report is None else report
+    if _concat.upscale_engine(mode) == "rtx":
+        try:
+            done = _resample_film(src, dst, mode, crf, rtx=True)
+        except Exception as exc:  # nvvfx, CUDA or the SDK: Lanczos still delivers
+            _discard(dst)
+            report["fallback"] = (str(exc) if isinstance(exc, _RtxUnavailable)
+                                  else "RTX Video Super Resolution failed (%s)" % (exc,))
+            log.warning("[PulseStudio] %s; upscaling to %s with Lanczos instead",
+                        report["fallback"], mode)
+        else:
+            if done:
+                report["engine"] = "rtx_vsr"
+                _fsync_path(dst)
+            return done
+    try:
+        done = _resample_film(src, dst, mode, crf, rtx=False)
+    except Exception as exc:
+        log.error("[PulseStudio] could not upscale %s to %s (%s); the native film is "
+                  "untouched", src, mode, exc)
+        _discard(dst)
+        return ""
+    if done:
+        report["engine"] = "lanczos"
+        _fsync_path(dst)
+    return done
+
+
+def _resample_film(src, dst, mode, crf, rtx):
+    """One pass of upscale_video: `dst`, "" for nothing to do, or it raises."""
     import av
     from fractions import Fraction
 
     if not src or not os.path.exists(src):
         return ""
-    try:
-        with av.open(src) as film:
-            if not film.streams.video:
-                return ""
-            video_in = film.streams.video[0]
-            audio_in = film.streams.audio[0] if film.streams.audio else None
-            size = _concat.upscale_size(video_in.codec_context.width,
-                                        video_in.codec_context.height, mode)
-            if size is None:
-                return ""
-            scaled_w, scaled_h, out_w, out_h = size
-            left, top = (scaled_w - out_w) // 2, (scaled_h - out_h) // 2
-            rate = video_in.average_rate or Fraction(24, 1)
+    with av.open(src) as film:
+        if not film.streams.video:
+            return ""
+        video_in = film.streams.video[0]
+        audio_in = film.streams.audio[0] if film.streams.audio else None
+        width, height = video_in.codec_context.width, video_in.codec_context.height
+        size = _concat.upscale_size(width, height, mode)
+        if size is None:
+            return ""
+        scaled_w, scaled_h, out_w, out_h = size
+        left, top = (scaled_w - out_w) // 2, (scaled_h - out_h) // 2
+        rate = video_in.average_rate or Fraction(24, 1)
+        enlarge = _RtxEnlarger(width, height, scaled_w, scaled_h) if rtx else None
+        try:
             os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
             with av.open(dst, mode="w") as output:
                 video_out = output.add_stream("libx264", rate=rate)
@@ -1067,12 +1163,16 @@ def upscale_video(src, dst, mode, crf=16):
                         output.mux(packet)
                         continue
                     for frame in packet.decode():
-                        big = frame.reformat(width=scaled_w, height=scaled_h,
-                                             format="rgb24", interpolation="LANCZOS")
-                        if (scaled_w, scaled_h) != (out_w, out_h):
-                            array = big.to_ndarray()[top:top + out_h, left:left + out_w]
-                            big = av.VideoFrame.from_ndarray(
-                                np.ascontiguousarray(array), format="rgb24")
+                        if enlarge is not None:
+                            array = enlarge(frame)
+                        else:
+                            big = frame.reformat(width=scaled_w, height=scaled_h,
+                                                 format="rgb24", interpolation="LANCZOS")
+                            array = (big.to_ndarray()
+                                     if (scaled_w, scaled_h) != (out_w, out_h) else None)
+                        if array is not None:
+                            big = av.VideoFrame.from_ndarray(np.ascontiguousarray(
+                                array[top:top + out_h, left:left + out_w]), format="rgb24")
                         big.pts = index
                         big.time_base = Fraction(1, 1) / rate
                         index += 1
@@ -1080,16 +1180,9 @@ def upscale_video(src, dst, mode, crf=16):
                             output.mux(out_packet)
                 for out_packet in video_out.encode(None):
                     output.mux(out_packet)
-    except Exception as exc:
-        log.error("[PulseStudio] could not upscale %s to %s (%s); the native film is "
-                  "untouched", src, mode, exc)
-        try:
-            if os.path.exists(dst):
-                os.unlink(dst)
-        except OSError:  # pragma: no cover
-            pass
-        return ""
-    _fsync_path(dst)
+        finally:
+            if enlarge is not None:
+                enlarge.close()
     return dst
 
 

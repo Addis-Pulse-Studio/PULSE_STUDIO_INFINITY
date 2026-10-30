@@ -336,8 +336,10 @@ class TestTheWarningIsActuallyWired(unittest.TestCase):
         """
         source = NODES_PY.read_text(encoding="utf-8")
         counts = {}
-        # Pulse Infinity's four nodes are in infinity_nodes.py, under the same rule.
-        for path in (NODES_PY, NODES_PY.parent / "infinity_nodes.py"):
+        # Pulse Infinity's four nodes are in infinity_nodes.py, and Pulse Resolve
+        # Super Scale is in resolve_nodes.py, under the same rule.
+        for path in (NODES_PY, NODES_PY.parent / "infinity_nodes.py",
+                     NODES_PY.parent / "resolve_nodes.py"):
             text = path.read_text(encoding="utf-8")
             declared = 0
             for node in ast.walk(ast.parse(text)):
@@ -349,7 +351,8 @@ class TestTheWarningIsActuallyWired(unittest.TestCase):
                               "has no node to attach to" % node.name)
                 declared += 1
             counts[path.name] = declared
-        self.assertEqual(counts, {"nodes.py": 11, "infinity_nodes.py": 4})
+        self.assertEqual(counts, {"nodes.py": 11, "infinity_nodes.py": 4,
+                                  "resolve_nodes.py": 1})
         self.assertIn('HIDDEN_INPUTS = {"unique_id": "UNIQUE_ID"}', source)
         self.assertIn('HIDDEN_INPUTS_WITH_PROMPT = {"unique_id": "UNIQUE_ID", '
                       '"prompt": "PROMPT"}', source)

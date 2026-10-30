@@ -45,6 +45,14 @@ guards. Agent directors read and write a folder of files; when the user points a
 cloud agent at that folder, the agent -- not the pack -- carries the frames out,
 and the README says so.
 
+WHAT PULSE RESOLVE SUPER SCALE ADDS
+
+It starts DaVinci Resolve and runs tools/resolve_superscale.py under Resolve's own
+Python, through the same module. Resolve's scripting library links Windows'
+socket library, and it is loaded by Resolve's Python, never by ComfyUI's: the
+pack's own process stays socket-free, and the helper is scanned here like every
+other file.
+
 SCOPE
 
 The shipped package only. `tests/` and `.github/` are excluded by design --

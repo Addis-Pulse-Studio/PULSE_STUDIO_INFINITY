@@ -87,11 +87,12 @@ from .comfyui_pulse_studio.pulse_timeline import (
     CONTINUITY_LAST_FRAME,
     CONTINUITY_MODES,
     CONTINUITY_NONE,
-    CONTINUITY_REF_GUIDED,
+    CONTINUITY_T2V,
     SHOT_CONTINUITY_MODES,
     SideChannel,
     build_timeline as build_document,
     check_continuity,
+    continuity_branches,
     global_block,
     ref_descriptor,
     resolve_continuity,
@@ -207,7 +208,9 @@ def _report_patches(model, unique_id, branches_used=(), fl2va_connected=False,
     return warnings, notes
 
 
-SAMPLERS = ["res_multistep", "euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde", "ddim"]
+# Appended only: a combo stores its value by name. "lcm" is Pika H3 Flex's sampler -- a fresh noise
+# draw at every step, which its six-interval schedule assumes (recipes.PIKA_FLEX_6STEP_SIGMAS).
+SAMPLERS = ["res_multistep", "euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde", "ddim", "lcm"]
 # "hyperflow" is HyperFlow's fixed 8-step grid (steps must be 8, sampler euler, cfg 1.0). It is registered in
 # ComfyUI's scheduler table by the ComfyUI-HyperFlow pack; without that pack, render.sample() says so by name.
 SCHEDULERS = ["simple", "normal", "beta", "sgm_uniform", "karras", "exponential", "hyperflow"]
@@ -667,8 +670,8 @@ class PulseRecipe:
     FUNCTION = "execute"
     CATEGORY = "AddisPulse/H3"
     DESCRIPTION = ("Sampling settings for one checkpoint -- FastH3-Omni 8-step, TaoMate "
-                   "3-step, HyperFlow 8-step or the base models. Wire it into "
-                   "PulseSlate's `recipe` (ref2va windows) or `recipe_fl2va`.")
+                   "3-step, HyperFlow 8-step, Pika H3 Flex 6-step or the base models. Wire "
+                   "it into PulseSlate's `recipe` (ref2va windows) or `recipe_fl2va`.")
 
     def execute(self, schema_version, preset, steps, sampler_name, scheduler, cfg, sigmas,
                 unique_id=None, **kwargs):
@@ -865,7 +868,13 @@ class PulseSlate:
                     "reference checkpoint -- faces and voices referenced in every "
                     "window -- and pins the previous window's last frame at frame 0 "
                     "with a guide. One checkpoint, no fl2va. The reference checkpoints "
-                    "were not trained with keyframe rows; compare it against 'none'."}),
+                    "were not trained with keyframe rows; compare it against 'none'.\n\n"
+                    "'text_to_video' puts every window on fl2va with no references: "
+                    "window 1 from the words alone (or from shot 1's start_image), "
+                    "each later one from the previous window's last frame. The fl2va "
+                    "checkpoint goes on `model` (model_fl2va, if wired, is used "
+                    "instead). Keep the bin empty and give each line its shot's Pulse "
+                    "Voice."}),
                 # ── append new widgets HERE, at the end, and nowhere else ────
             },
             "optional": optional,
@@ -1737,22 +1746,18 @@ def _apply_continuity_branch(timeline, continuity):
     """Map §11's continuity modes onto the branch machinery that implements them.
 
     `none` leaves continuation windows on ref2va, where identity references stay
-    alive across the whole film. The other two need a pinned frame, and pinning a
-    frame *is* the fl2va branch -- ComfyUI exposes it as a different checkpoint
-    with disjoint inputs, not as a setting. `check_continuity` has already
-    refused the case where model_fl2va is absent, so this cannot silently
-    downgrade.
+    alive across the whole film. `last_frame_carry` and `keyframe_pairs` need a
+    pinned frame, and pinning a frame *is* the fl2va branch -- ComfyUI exposes it
+    as a different checkpoint with disjoint inputs, not as a setting.
+    `check_continuity` has already refused those two without model_fl2va, so this
+    cannot silently downgrade. `text_to_video` puts the whole film on fl2va, on
+    whichever checkpoint is wired, and `ref_guided_carry` stays on the reference
+    branch and pins the seam with a guide instead (pulse_timeline.CONTINUITY_REF_GUIDED).
+    The mapping itself is pulse_timeline.continuity_branches, which tests can import.
     """
-    if continuity == CONTINUITY_LAST_FRAME:
-        timeline.continuation_branch = BRANCH_FL2VA
-    elif continuity == CONTINUITY_KEYFRAME_PAIRS:
-        timeline.branch = BRANCH_FL2VA
-        timeline.continuation_branch = BRANCH_FL2VA
-    else:
-        timeline.continuation_branch = timeline.branch
-    # ref_guided_carry stays on the reference branch and pins the seam frame with a
-    # guide instead -- see pulse_timeline.CONTINUITY_REF_GUIDED.
-    timeline.guided_carry = continuity == CONTINUITY_REF_GUIDED
+    timeline.branch, timeline.continuation_branch, timeline.guided_carry = (
+        continuity_branches(continuity, timeline.branch))
+    timeline.text_to_video = continuity == CONTINUITY_T2V
 
 
 def _shot_blocks(timeline, payloads, continuity):
@@ -2078,12 +2083,18 @@ class PulseRender:
                     "'max' then actually does something. Carried frames and keyframes "
                     "are always fitted to the canvas."}),
                 "upscale": (list(UPSCALE_MODES), {"default": UPSCALE_OFF, "tooltip":
-                    "Deliver the finished film at 1080. '1080p_fit': short edge 1080, "
-                    "aspect kept (1344x768 -> 1890x1080). '1080p_exact': 1920x1080 or "
-                    "1080x1920, centre-cropped to fill. Windows still render inside "
-                    "H3's trained ~1MP budget -- neither FastH3-Omni nor TaoMate FL2VA "
-                    "renders natively at 1080 -- and the assembled film is resampled "
-                    "(Lanczos) afterwards. `frames` stays at the rendered size."}),
+                    "Deliver the finished film at 1080, 1440 or 2160. '1080p_fit': short "
+                    "edge 1080, aspect kept (1344x768 -> 1890x1080). '_exact': 1920x1080, "
+                    "2560x1440 or 3840x2160 (turned for portrait), centre-cropped to "
+                    "fill, resampled with Lanczos. '_rtx': the same canvases through "
+                    "NVIDIA's RTX Video Super Resolution on the GPU, a learned upscale "
+                    "that restores detail on the way up. It needs an RTX card and nvvfx "
+                    "(NVIDIA's RTX nodes for ComfyUI install it), and without them falls "
+                    "back to Lanczos and says why. Windows still render inside H3's "
+                    "trained ~1MP budget -- neither FastH3-Omni nor TaoMate FL2VA renders "
+                    "natively at 1080 -- and the assembled film is upscaled afterwards, "
+                    "beside it as assembled_<mode>.mp4. `frames` stays at the rendered "
+                    "size."}),
                 # ── append new widgets HERE, at the end, and nowhere else ────
             },
             "optional": {

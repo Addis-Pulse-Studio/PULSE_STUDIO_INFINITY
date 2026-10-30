@@ -80,7 +80,8 @@ class ACharacterWithTwoPictures(unittest.TestCase):
 class TheSeamHeldByAGuide(unittest.TestCase):
 
     def test_the_mode_is_appended(self):
-        self.assertEqual(CONTINUITY_MODES[-1], CONTINUITY_REF_GUIDED)
+        # After the three it joined; text_to_video was appended after it in turn.
+        self.assertEqual(CONTINUITY_MODES.index(CONTINUITY_REF_GUIDED), 3)
 
     def test_continuation_windows_stay_on_ref2va_with_a_guide(self):
         plan = cast_film(guided=True)

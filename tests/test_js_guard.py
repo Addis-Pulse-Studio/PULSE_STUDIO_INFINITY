@@ -31,10 +31,11 @@ PANEL = JS_DIR / "pulse_slate.js"
 ORDER_JS = JS_DIR / "ps_widget_order.js"
 NODES_PY = PROJECT_ROOT / "nodes.py"
 # Pulse Infinity's nodes live in their own module (so nodes.py keeps the eleven
-# classes test_patches counts) under the same slot contract; every AST helper
-# below reads both files.
+# classes test_patches counts) under the same slot contract, and so does Pulse
+# Resolve Super Scale; every AST helper below reads all three files.
 INFINITY_PY = PROJECT_ROOT / "infinity_nodes.py"
-NODE_SOURCES = (NODES_PY, INFINITY_PY)
+RESOLVE_PY = PROJECT_ROOT / "resolve_nodes.py"
+NODE_SOURCES = (NODES_PY, INFINITY_PY, RESOLVE_PY)
 CONSTANTS_PY = PROJECT_ROOT / "comfyui_pulse_studio" / "constants.py"
 
 NODE = shutil.which("node")
@@ -60,7 +61,7 @@ NODE_CLASSES = ("PulseSlate", "PulseShot", "PulseVoice", "PulseRender", "PulseBe
                 "PulseRetake", "PulseStill", "PulseLipSyncSegment", "PulseLipSyncPaste",
                 "PulseRecipe", "PulseCharacter",
                 "PulseInfinityLoopController", "PulseDynamicShot", "PulseInfinityRender",
-                "PulseObserver")
+                "PulseObserver", "PulseResolveSuperScale")
 
 
 def _class_nodes():
@@ -378,6 +379,7 @@ class TestInputAndOutputOrderIsFrozen(unittest.TestCase):
         "PulseInfinityRender": ["timeline", "infinity", "model", "vae", "audio_vae",
                                 "model_fl2va"],
         "PulseObserver": ["beat", "infinity", "images", "audio"],
+        "PulseResolveSuperScale": ["video"],
     }
 
     EXPECTED_OUTPUTS = {
@@ -408,6 +410,7 @@ class TestInputAndOutputOrderIsFrozen(unittest.TestCase):
         "PulseInfinityRender": (["VIDEO", "IMAGE", "AUDIO", "PULSE_BEAT", "STRING"],
                                 ["video", "frames", "audio", "beat", "report"]),
         "PulseObserver": (["STRING", "IMAGE", "STRING"], ["report", "evidence", "next_beat"]),
+        "PulseResolveSuperScale": (["VIDEO", "STRING", "STRING"], ["video", "path", "report"]),
     }
 
     #: §4. Both languages must agree on how many sockets each group has, or the

@@ -25,6 +25,11 @@ include tools/pulse_desk.py
 include tools/setup_director_workspace.py
 recursive-include director_workspace *.md
 
+# Pulse Resolve Super Scale runs this helper under DaVinci Resolve's own Python;
+# the .bat is the same helper by drag and drop.
+include tools/resolve_superscale.py
+include tools/resolve_superscale.bat
+
 # The GPL-3.0 reference tree is reviewed for feature ideas only; code from it
 # would relicense this whole project. .gitignore keeps it out of git, which is
 # not the same as keeping it out of a build. See NOTICE.

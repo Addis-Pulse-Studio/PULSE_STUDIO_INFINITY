@@ -112,6 +112,10 @@ class Timeline:
         # ref_guided_carry: continuation windows pin the previous last frame with a
         # guide while staying on the reference branch. Set by the node layer.
         self.guided_carry = False
+        # text_to_video: every window is on fl2va because the project said so, not
+        # because the stored document did. Set by the node layer; it changes what a
+        # refusal says and nothing else, and like guided_carry is never serialised.
+        self.text_to_video = False
         # The previous run this film opens where it left off: a
         # segcache.carry_in_descriptor, set by the node layer from the first
         # shot's `continue_from`. Window 0 then continues it exactly as window 1
@@ -260,7 +264,14 @@ class Timeline:
         # Branch/input coherence. These are mutually exclusive per render because
         # they are different checkpoints, not different settings.
         if self.branch == BRANCH_FL2VA:
-            if len(self.assets):
+            if len(self.assets) and self.text_to_video:
+                problems.append(
+                    "continuity is text_to_video, so every window samples on fl2va "
+                    "(MiniMaxH3ImageToVideo), which takes no references, but the bin "
+                    "holds %d asset(s). Empty the bin -- a line's voice goes on its "
+                    "shot's Pulse Voice -- or pick another continuity mode."
+                    % (len(self.assets),))
+            elif len(self.assets):
                 problems.append(
                     "branch is fl2va (MiniMaxH3ImageToVideo), which takes no references, "
                     "but the bin holds %d asset(s). Switch to ref2va or empty the bin."

@@ -370,12 +370,24 @@ REF_FIT_MODES = (REF_FIT_CANVAS, REF_FIT_KEEP_ASPECT)
 
 # Neither FastH3-Omni nor TaoMate FL2VA renders natively above 768p -- TaoMate's
 # FL2VA runtime is hard-coded to 768x1376, FastH3-Omni was trained at 768p and
-# 480p, and H3's own pixel budget is MAX_PIXELS above. So 1080 is reached after
-# the film is assembled, by resampling it, never by sampling past the budget.
+# 480p, and H3's own pixel budget is MAX_PIXELS above. So 1080 and above are
+# reached after the film is assembled, never by sampling past the budget.
 UPSCALE_OFF = "off"
 UPSCALE_1080_FIT = "1080p_fit"      # short edge 1080, aspect kept
 UPSCALE_1080_EXACT = "1080p_exact"  # 1920x1080 / 1080x1920, centre-cropped to fill
-UPSCALE_MODES = (UPSCALE_OFF, UPSCALE_1080_FIT, UPSCALE_1080_EXACT)
+# 2K and 4K, and all three heights through NVIDIA's RTX Video Super Resolution
+# (`nvvfx`, which NVIDIA's ComfyUI RTX nodes install): a learned upscale on the
+# GPU where `_exact` is a Lanczos resample. An `_rtx` mode that cannot run -- no
+# nvvfx, no CUDA, past 4x -- falls back to Lanczos and the report says why.
+UPSCALE_1440_EXACT = "1440p_exact"  # 2560x1440 / 1440x2560
+UPSCALE_2160_EXACT = "2160p_exact"  # 3840x2160 / 2160x3840
+UPSCALE_1080_RTX = "1080p_rtx"
+UPSCALE_1440_RTX = "1440p_rtx"
+UPSCALE_2160_RTX = "2160p_rtx"
+#: Appended, never inserted: a combo stores its value.
+UPSCALE_MODES = (UPSCALE_OFF, UPSCALE_1080_FIT, UPSCALE_1080_EXACT,
+                 UPSCALE_1440_EXACT, UPSCALE_2160_EXACT,
+                 UPSCALE_1080_RTX, UPSCALE_1440_RTX, UPSCALE_2160_RTX)
 
 # ── Audio carry-over ────────────────────────────────────────────────────────
 # Upstream (muse-collective, MIT) fed the previous window's last ~4s of decoded

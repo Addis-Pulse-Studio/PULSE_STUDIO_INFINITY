@@ -342,6 +342,11 @@ active, those frames leave the machine *through that agent*. `ollama`, `pi` on a
 local model, and `scripted` keep everything local. The Loop Controller's report
 names the active director and says which kind it is.
 
+**Pulse Resolve Super Scale starts DaVinci Resolve** on this machine, from the same
+one module, and talks to it only through Resolve's own Python. Resolve's
+scripting library links Windows' socket library, which is one reason it is
+never loaded into ComfyUI. Nothing leaves the machine.
+
 ## Known issues
 
 - **Workflows saved by any pre-2.0.0 build will not load.** Widget order changed
@@ -522,6 +527,19 @@ does not sample.
 - **Longer than one window** → those two outputs are blocked; take the `timeline`
   output to a **Pulse Render** node.
 
+The prompt it writes is laid out the way MiniMax's own guides lay it out
+(`docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md` and `..._base_en.md` on
+huggingface.co/MiniMaxAI/MiniMax-H3). A reference window's summary opens with
+its task type — `[reference generation + audio reuse] The target video shows …`
+— where it used to open with `[window 2 of 4]`, which the model was never taught.
+`retention_analysis` names a voice's owner without a speaker id, and a picture
+kept in part is `partially_preserved` (`partially_copy` is the audio word; the
+bin still stores it). A First/Last-Frame window opens with the guide's
+image-alignment sentence, on its own line, its end mark the window's length to
+two decimals, and its lip-sync instruction sits after the shots it covers rather
+than in `overall_soundscape`. Segments rendered before this re-render once,
+because their prompts changed.
+
 Windows are partitioned `balanced` by default: 16s at a 15s ceiling becomes two
 ~8s windows, not 15s + 1s. A 1s trailing window is below H3's trained floor and
 reliably looks broken. `fill` is available when you mean windows of a literal
@@ -546,11 +564,21 @@ budget: 16:9 is 1344×768, 9:16 is 768×1344, 21:9 is 1536×672, 1:1 is 992×992
 4:3 is 1152×864. `custom` uses the `width`/`height` widgets instead.
 
 `continuity` chooses how windows join: `none`, `last_frame_carry`,
-`keyframe_pairs` or `ref_guided_carry`. The middle two pin a frame, which is the
-fl2va checkpoint specifically, so they need `model_fl2va` and **fail at compile
-time** without it rather than falling back to something that looks like it
-worked. `ref_guided_carry` (experimental) keeps every window on the reference
-checkpoint and pins the previous window's last frame with a guide instead.
+`keyframe_pairs`, `ref_guided_carry` or `text_to_video`. `last_frame_carry` and
+`keyframe_pairs` pin a frame, which is the fl2va checkpoint specifically, so they
+need `model_fl2va` and **fail at compile time** without it rather than falling
+back to something that looks like it worked. `ref_guided_carry` (experimental)
+keeps every window on the reference checkpoint and pins the previous window's
+last frame with a guide instead.
+
+`text_to_video` puts the whole film on fl2va, from the words alone: window 1 is
+unpinned (unless shot 1 has a `start_image`), and each later window opens on the
+previous window's last frame. Its one checkpoint is the fl2va one, on `model` —
+`model_fl2va` is not needed, and is used instead when wired. fl2va takes no
+references, so the bin stays empty and each line's voice goes on its shot's
+Pulse Voice. It replaces the `"branch": "fl2va"` that the first T2V graphs typed
+into `timeline_data` by hand; that key still works under `none`, and compiles to
+the same windows.
 
 **One checkpoint per film, unless you mean two.** fl2va takes no references, so
 a film whose first window is a reference window and whose later windows are fl2va
@@ -560,8 +588,8 @@ carried frame and the prompt can hold, and the voice is a description. With
 unwired: it is ~20 GB resident for nothing, and the report says so.
 
 The **`recipe`** socket takes a [Pulse Recipe](#pulse-recipe): how this film's
-checkpoint wants to be sampled (FastH3-Omni, HyperFlow, TaoMate or the base
-models). It replaces the steps / sampler / scheduler / cfg widgets, which then
+checkpoint wants to be sampled (FastH3-Omni, HyperFlow, TaoMate, Pika H3 Flex
+or the base models). It replaces the steps / sampler / scheduler / cfg widgets, which then
 only apply when nothing is wired. `recipe_fl2va` does the same for the fl2va
 windows. The **`cast`** sockets take [Pulse Character](#pulse-character) nodes,
 for a graph that prefers wires to the Asset Bin.
@@ -810,6 +838,7 @@ without complaint and look like the model being bad:
 | `fasth3_omni_8step` | 8 · euler · simple | FastH3-Omni (pruned ref2va). Patch it with Model Attention Backend → Model Sparse Attention (vsa, keep 10). |
 | `taomate_fl2va_3step` | 3 · euler · sigmas `1.0, 0.961165, 0.853333, 0.0` | the full fl2va checkpoint with the TaoMate LoRA at 1.0 |
 | `hyperflow_8step` | 8 · euler · `hyperflow` | either branch, non-pruned, with ComfyUI-HyperFlow's LoRA loader |
+| `pika_h3_flex_6step` | 6 · lcm · sigmas `1.0, 0.972973, 0.923077, 0.8, 0.571429, 0.333333, 0.0` | either branch, with Pika H3 Flex's ref2va or fl2va LoRA at 1.0 (the pruned checkpoints are fine: it patches attention and MLP only) |
 | `h3_base` | 20 · res_multistep · simple | the undistilled checkpoints |
 | `custom` | the widgets, or a hand-written `sigmas` | anything else |
 
@@ -818,7 +847,13 @@ run upward or stop short of 0, a `hyperflow` schedule at anything but 8 steps �
 is refused at compile time rather than inside the first window's sampler. One
 that is merely off-recipe for the model it samples — FastH3's stacked PDD heads
 away from 8 Euler steps or without VSA, the `hyperflow` schedule on a model with
-no HyperFlow adapter — is named in the report.
+no HyperFlow adapter, Pika's schedule with no LoRA on the model or on top of
+HyperFlow — is named in the report.
+
+Pika samples `lcm`: a fresh noise draw at every step, which its six intervals
+were distilled against; Pika's README says plain six-step Euler is not the same.
+`lcm` is on every sampler list in the pack (the slate, `custom`, Retake, Still),
+appended so the values saved graphs hold stay where they were.
 
 ### Pulse Character
 
@@ -875,17 +910,149 @@ Executes a `PULSE_TIMELINE`, reusing every window already on disk. See
 - `ref_image_fit` — `canvas` crops each reference picture to the render's aspect,
   as always. `keep_aspect` hands it over whole and lets H3 scale it, so a portrait
   character sheet keeps its head and its feet.
-- `upscale` — the finished film at 1080. Windows render inside H3's pixel budget
-  either way; neither FastH3-Omni nor TaoMate renders 1080 natively. `1080p_fit`
-  keeps the aspect (1344×768 → 1890×1080); `1080p_exact` delivers 1920×1080 or
-  1080×1920. The finished file is resampled one frame at a time with Lanczos and
-  its audio copied untouched, so a long film is never held in memory at the
-  larger size. It adds no detail the render did not have.
+- `upscale` — the finished film at 1080, 1440 or 2160. Windows render inside
+  H3's pixel budget either way; neither FastH3-Omni nor TaoMate renders 1080
+  natively. `1080p_fit` keeps the aspect (1344×768 → 1890×1080). `1080p_exact`,
+  `1440p_exact` and `2160p_exact` deliver 1920×1080, 2560×1440 or 3840×2160
+  (turned for portrait), resampled with Lanczos, which adds no detail the render
+  did not have. `1080p_rtx`, `1440p_rtx` and `2160p_rtx` deliver the same canvases
+  through NVIDIA's RTX Video Super Resolution — see
+  [Delivering at 2K / 4K](#delivering-at-2k--4k). Either way the film is upscaled
+  one frame at a time, its audio copied untouched, so a long film is never held
+  in memory at the larger size, and it lands beside `assembled.mp4` as
+  `assembled_<mode>.mp4`.
 
 Every approximation patched onto the incoming model is detected and folded into
 the cache key. Sol-Attn, Spectrum and EasyCache all change what the same prompt at
 the same seed produces, and a cache that ignored them would hand you a film whose
 shots were rendered at different sparsities without saying so.
+
+### Delivering at 2K / 4K
+
+H3 renders inside a ~1 MP budget, so every delivery size is reached after the film
+is assembled. Every route delivers the same canvas: they cover it and
+centre-crop, so 16:9 at 1344×768 becomes exactly 3840×2160, losing a few rows at
+the top and bottom.
+
+| route | where | what it is |
+|---|---|---|
+| `1440p_exact`, `2160p_exact` | Pulse Render | A Lanczos resample. Fast, and adds no detail. |
+| `1080p_rtx`, `1440p_rtx`, `2160p_rtx` | Pulse Render | NVIDIA RTX Video Super Resolution (quality ULTRA) on the GPU, one frame at a time: a learned upscale that restores detail on the way up. |
+| [Pulse Resolve Super Scale](#pulse-resolve-super-scale) | DaVinci Resolve Studio, in the graph after Pulse Render | Resolve's Super Scale, 2× Enhanced, with Resolve's own resize for the rest of the way, rendered to H.265. As much fine detail as RTX and closer to the film it came from (measured below). |
+| `tools/resolve_superscale.bat` | DaVinci Resolve Studio, by hand after the render | The same Super Scale, by drag and drop. |
+
+**RTX** needs an RTX card and `nvvfx`, which NVIDIA's RTX nodes for ComfyUI
+install (`pip install nvidia-vfx`). Without either, past 4×, or on an SDK error,
+an `_rtx` mode resamples with Lanczos instead, and the report says which ran and
+why.
+
+**Resolve, by hand.** Drag a film, or a Pulse run folder, onto
+`tools/resolve_superscale.bat`; from a run folder it takes the native
+`assembled.mp4`, never an already-upscaled copy. Or run
+`resolve_superscale.bat <film or folder> --target 1440p`. It does five things:
+
+1. Starts Resolve headless (`-nogui`) if it isn't running, and quits it again
+   afterwards.
+2. Builds a throwaway project with a timeline at the target canvas, input sizing
+   `scaleToCrop`.
+3. Sets Super Scale on the clip. `auto` is 2× Enhanced (sharpness and noise
+   reduction 0.5), with Resolve's own resize covering what is left — up to 1.5×,
+   which takes every Pulse canvas to 1440p or 4K. A smaller film than that gets
+   3× or 4×.
+4. Renders `<name>_<target>_resolve.mp4` beside the film, with Resolve's own
+   H.265 encoder and the film's audio.
+5. Deletes the project.
+
+On an RTX 5090 a 30 s film went to 4K in 16 s once Resolve was up. Starting Resolve
+headless adds about half a minute.
+
+How the routes compare: one Pulse frame (1344×768, a face), taken to 4K each way.
+The Laplacian's variance on the face is the fine detail; scaling the 4K frame back
+down and comparing it with the original is how faithful the upscale is (luma,
+Resolve Studio 21.1.1):
+
+| 4K from 1344×768 | fine detail | back to the source |
+|---|---|---|
+| Lanczos (`2160p_exact`) | 10.0 | 43.6 dB |
+| RTX VSR (`2160p_rtx`) | 15.3 | 38.6 dB |
+| Super Scale 3× | 9.9 | 42.8 dB |
+| Super Scale 4× | 10.2 | 44.7 dB |
+| **Super Scale 2× Enhanced** (the default) | **15.8** | **45.2 dB** |
+| Super Scale 2× Enhanced, sharpness 1.0, NR 0.2 | 92.6 | 35.1 dB |
+
+By eye RTX smooths skin to wax; 2× Enhanced at full sharpness turns eyes and skin
+crunchy. Raise `--sharpness` in small steps, if at all.
+
+Through the API Resolve takes no quality setting for an MP4 codec, so the encoder
+sets the bitrate: at 4K its own H.265 wrote 34 Mbit/s, its NVIDIA H.265 22 and its
+H.264 58. The helper uses its own H.265; `--codec h264` gives the larger file.
+
+The options are `--mode auto|2x|2x_enhanced|3x|4x`, `--sharpness` and `--nr` for
+2× Enhanced, `--codec h265|h264`, `--out` and `--keep-project`. Resolve holds one
+project at a time, so if one of yours is open the helper stops and says so;
+`--switch-project` lets it switch to its temporary project and load yours again
+afterwards.
+
+It needs two things, set up once:
+
+- DaVinci Resolve **Studio**. Super Scale is a Studio feature.
+- Preferences › System › General › External scripting using: **Local**.
+
+It talks only to the Resolve on this machine, through Resolve's own scripting
+module, and runs under Resolve's own Python. ComfyUI never imports Resolve's
+module: the node below runs this same helper as a child process.
+
+### Pulse Resolve Super Scale
+
+The Resolve route as a node, so the 2K/4K film arrives in the same queue run as
+the render. Wire Pulse Render's `video` into it. Its own `video` output goes on
+to Save Video or a preview like any other, and the file is written beside
+`assembled.mp4` as `assembled_<target>_resolve.mp4`.
+
+```
+Pulse Render ──video──▶ Pulse Resolve Super Scale ──video──▶ Save Video
+```
+
+When it runs, it:
+
+1. Frees the GPU, because Resolve shares it with ComfyUI (`free_vram`, on by
+   default). With [ComfyUI-Memory-Reclaim](https://github.com/Addis-Pulse-Studio/ComfyUI-Memory-Reclaim)
+   installed it runs that pack's *All Models* + *Hard* purge, which also hands
+   PyTorch's cache back to the driver, and its before/after numbers go into the
+   report. Without it, ComfyUI's own unload. The models reload on the next run.
+2. Starts Resolve headless if it isn't running.
+3. Runs `tools/resolve_superscale.py` under Resolve's own Python: the same helper
+   as the `.bat`, with the same canvas, `auto` mode and encoder. Its progress
+   drives the node's progress bar.
+4. Quits a Resolve it started (`when_done`), so the GPU is free again before the
+   next render. A Resolve you already had open is left as it is.
+
+The widgets are the helper's options: `target`, `mode`, `sharpness`,
+`noise_reduction`, `codec`, and `open_project` (`stop`, or `switch_and_restore`
+for the helper's `--switch-project`).
+
+- **Which film.** Pulse Render with its own `upscale` set hands on
+  `assembled_<mode>.mp4`. The node sends the native `assembled.mp4` beside it
+  instead, as the `.bat` does, and the report says so. Any other VIDEO works too.
+  A plain file goes as it is, and frames or a trimmed clip are written out
+  first. The result lands beside a film in ComfyUI's output folder, and in
+  `output/pulse_resolve/` for one from anywhere else. A film that already fills
+  the canvas is refused.
+- **Cancel** stops the render. The helper stops Resolve's render, removes the
+  unfinished file and deletes its temporary project. A Resolve the node started
+  is quit just as after a finished render.
+- **Time.** Starting Resolve adds about half a minute to every run.
+  `leave_running` keeps a headless Resolve up between runs, but it then holds
+  GPU memory the next H3 render wants.
+- **Another folder.** If Resolve isn't in
+  `C:\Program Files\Blackmagic Design\DaVinci Resolve`, set `PULSE_RESOLVE_DIR`
+  to its folder and restart ComfyUI.
+- **Windows only**, with the one-time setup above: Resolve Studio, and External
+  scripting set to Local.
+
+To free the GPU in the graph instead, put Memory Reclaim's *Advanced Model
+Unload* (All Models, Hard) on the `video` wire between Pulse Render and this
+node, and turn `free_vram` off.
 
 ### Pulse Lip-Sync Segment / Pulse Lip-Sync Paste
 

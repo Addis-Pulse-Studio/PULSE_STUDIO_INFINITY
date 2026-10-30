@@ -12,6 +12,8 @@ agree with each other:
     hand-written schedule -- states 0/16/33/49 of a 50-step shift-12 one.
   * HyperFlow wants exactly its own 8-step grid, which its pack registers as the
     `hyperflow` scheduler.
+  * Pika H3 Flex (a LoRA per branch) wants 6 steps on its own schedule with fresh
+    noise between them -- ComfyUI's `lcm` sampler, not Euler.
 
 A film that opens on FastH3-Omni and carries on in TaoMate needs two of those at
 once. A recipe is one of them, and PulseSlate takes one per branch.
@@ -25,6 +27,10 @@ Every number here was read from the model's own release, not inferred:
     conversions ship with -- `1.0, 0.961165, 0.853333, 0.0`.
   * HyperFlow: the `hyperflow_sigmas` header of the released adapter, served by
     ComfyUI-HyperFlow's scheduler, which refuses anything but 8 steps.
+  * Pika H3 Flex: the README of Pika-Labs/Pika-H3-Flex (timestep knots
+    1000/750/500/250/100/40/0 at shift 12, "with fresh intermediate noise", and
+    "generic six-step Euler sampling is not equivalent"), and Comfy-Org's Pika
+    templates, which sample `lcm` on those knots shifted: the sigmas below.
 
 Pure stdlib -- the node layer reads the model's traits (it needs torch for that)
 and this module only decides what they mean.
@@ -36,6 +42,7 @@ __all__ = [
     "RECIPE_PRESETS",
     "RECIPE_NAMES",
     "RECIPE_CUSTOM",
+    "PIKA_FLEX_6STEP_SIGMAS",
     "TAOMATE_3STEP_SIGMAS",
     "RecipeError",
     "make_recipe",
@@ -47,6 +54,11 @@ __all__ = [
 
 #: The three intervals TaoMate's FL2VA LoRA was trained to take.
 TAOMATE_3STEP_SIGMAS = (1.0, 0.961165, 0.853333, 0.0)
+
+#: Pika H3 Flex's six intervals: timesteps 1000/750/500/250/100/40/0 under H3's
+#: shift 12. Sampled with `lcm` -- a fresh noise draw at every step, as Pika's own
+#: sampler does -- because Euler on the same sigmas is a different sampler.
+PIKA_FLEX_6STEP_SIGMAS = (1.0, 0.972973, 0.923077, 0.8, 0.571429, 0.333333, 0.0)
 
 RECIPE_CUSTOM = "custom"
 
@@ -69,6 +81,13 @@ RECIPE_PRESETS = {
         "branch": None,
         "about": "HyperFlow 8-step, on either branch. Needs the ComfyUI-HyperFlow pack "
                  "and its LoRA loader on the (non-pruned) model.",
+    },
+    "pika_h3_flex_6step": {
+        "steps": 6, "sampler": "lcm", "scheduler": "simple", "cfg": 1.0,
+        "sigmas": list(PIKA_FLEX_6STEP_SIGMAS), "branch": None,
+        "about": "Pika H3 Flex 6-step, on either branch: the Pika ref2va or fl2va LoRA "
+                 "at 1.0 on the matching checkpoint (the pruned ones are fine -- the LoRA "
+                 "patches attention and MLP only), lcm on its own six-interval schedule.",
     },
     "h3_base": {
         "steps": 20, "sampler": "res_multistep", "scheduler": "simple", "cfg": 1.0,
@@ -206,6 +225,18 @@ def recipe_warnings(recipe, traits, branch):
         out.append(
             "%s: FastH3-Omni is a ref2va checkpoint, and this recipe is on the %s "
             "branch." % (label, branch))
+    if recipe.get("name") == "pika_h3_flex_6step" and not traits.get("lora"):
+        out.append(
+            "%s: Pika H3 Flex's 6-step schedule is set, but no LoRA was found on the "
+            "model. Without the Pika adapter six lcm steps leave the frame unfinished "
+            "-- load pika_h3_flex_ref2va (reference windows) or pika_h3_flex_fl2va "
+            "(First/Last-Frame and text-to-video windows) with LoraLoaderModelOnly at "
+            "1.0." % label)
+    if recipe.get("name") == "pika_h3_flex_6step" and traits.get("hyperflow"):
+        out.append(
+            "%s: the model carries HyperFlow and the recipe is Pika H3 Flex's. They are "
+            "two different distillations of H3, each trained on its own schedule; load "
+            "one of them, not both." % label)
     return out
 
 

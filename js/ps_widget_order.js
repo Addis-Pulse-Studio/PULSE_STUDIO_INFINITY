@@ -356,6 +356,20 @@ const SPECS = {
       { name: "seam_treatment", kind: "string" },
     ],
   },
+  // Pulse Resolve Super Scale (resolve_nodes.py), under the shared version key.
+  PulseResolveSuperScale: {
+    "3.0.0": [
+      { name: "schema_version", kind: "string" },
+      { name: "target", kind: "string" },
+      { name: "mode", kind: "string" },
+      { name: "sharpness", kind: "number" },
+      { name: "noise_reduction", kind: "number" },
+      { name: "codec", kind: "string" },
+      { name: "open_project", kind: "string" },
+      { name: "when_done", kind: "string" },
+      { name: "free_vram", kind: "boolean" },
+    ],
+  },
 };
 
 /** Names only, in the shape spec §3.3 describes: WIDGET_NAMES[class][version]. */

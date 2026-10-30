@@ -88,14 +88,15 @@ class TestTwoVoicesInTheBin(unittest.TestCase):
                       self.prompt)
 
     def test_each_gets_its_own_retention_line(self):
-        self.assertIn("`<Audio 1>` (the voice of <Subject 1> (S1)): reference", self.prompt)
-        self.assertIn("`<Audio 2>` (the voice of <Subject 2> (S2)): reference", self.prompt)
+        # No speaker id in retention_analysis (MiniMax's reference guide).
+        self.assertIn("`<Audio 1>` (the voice of <Subject 1>): reference", self.prompt)
+        self.assertIn("`<Audio 2>` (the voice of <Subject 2>): reference", self.prompt)
 
     def test_a_lip_sync_bin_voice_asks_for_the_match_by_character(self):
         prompt = _compile(_film([
             _voice("v_mimi", "MimiVO", "mimi", AUDIO_ROLE_LIP_SYNC)])).windows[0].prompt
         self.assertIn("`<Audio 1>` is the speech <Subject 1> (S1) is saying", prompt)
-        self.assertIn("`<Audio 1>` (the voice of <Subject 1> (S1)): fully_copy", prompt)
+        self.assertIn("`<Audio 1>` (the voice of <Subject 1>): fully_copy", prompt)
 
     def test_an_unbound_recording_beside_a_bound_one_stays_anonymous(self):
         """Ambience does not become somebody's voice because a voice is in the
@@ -388,7 +389,7 @@ class TestASoundtrackRenumbersBoundLines(unittest.TestCase):
             self.assertIn("<Subject 1> (S1)", line)
 
     def test_the_retention_line_moves_with_it(self):
-        self.assertIn("`<Audio 2>` (the voice of <Subject 1> (S1)): reference",
+        self.assertIn("`<Audio 2>` (the voice of <Subject 1>): reference",
                       self._prompt(True))
 
 

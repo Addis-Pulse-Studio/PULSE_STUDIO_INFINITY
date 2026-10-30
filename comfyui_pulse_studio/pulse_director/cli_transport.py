@@ -1,9 +1,14 @@
-"""Running a director's own CLI: `ollama run`, `pi -p`, `claude -p`, `gemini -p`.
+"""Running a program: a director's own CLI, and DaVinci Resolve.
+
+Pulse Infinity's directors run `ollama run`, `pi -p`, `claude -p`, `gemini -p`.
+Pulse Resolve Super Scale starts `Resolve.exe -nogui` and runs the Super Scale
+helper under Resolve's own Python.
 
 This is the one module in the pack allowed to start a process
-(tests/test_infinity_directors.py enforces it), and it is how Pulse Infinity
-reaches a local model while the pack itself stays socket-free: the CLI talks to
-its model, the pack talks to the CLI over stdin and stdout.
+(tests/test_infinity_directors.py enforces it). It is how the pack reaches a
+local model, or Resolve, while the pack itself stays socket-free: the CLI talks
+to its model, Resolve's Python talks to Resolve, and the pack talks to them over
+stdin and stdout.
 
 THE RULES IT KEEPS
 ------------------
@@ -21,6 +26,14 @@ THE RULES IT KEEPS
     the process group elsewhere), so an interrupted render does not leave a model
     running in the background holding VRAM.
   * On Windows no console window flashes up per call (CREATE_NO_WINDOW).
+  * A program meant to outlive the call (Resolve) gets none of our handles. A
+    child holding the write end of a pipe keeps its reader waiting until the
+    child exits, which for Resolve means hours. It also gets a process group of
+    its own, so ComfyUI's Ctrl+C does not reach it.
+  * A long job with progress to show (Resolve's render) is read a line at a
+    time. A cancel first asks it to stop by itself, through the caller's
+    `on_cancel`, and kills its tree only after a grace period: a killed render
+    leaves its temporary project behind in Resolve.
 
 Stdlib only, like the rest of the core.
 """
@@ -32,12 +45,13 @@ import re
 import shutil
 import signal
 import subprocess
+import threading
 import time
 from typing import Callable, Mapping, Optional, Sequence
 
 from .base_director import DirectorCancelled, DirectorError, DirectorTimeout
 
-__all__ = ["CliResult", "CliRunner", "build_argv", "run_cli"]
+__all__ = ["CliResult", "CliRunner", "build_argv", "run_cli", "run_lines", "spawn_detached"]
 
 _WINDOWS = os.name == "nt"
 #: Terminal control sequences. Some CLIs (Ollama's) emit them into a pipe too.
@@ -160,6 +174,122 @@ def run_cli(argv: list[str], stdin_text: str, timeout: float = 600.0,
             pass
         raise
     return CliResult(command, _ANSI_RE.sub("", stdout), stderr, proc.returncode,
+                     time.monotonic() - started)
+
+
+def _existing(argv: Sequence[str]) -> list[str]:
+    """`argv` resolved like run_cli's, but a full path that is not there is named
+    as such rather than as a director CLI missing from PATH."""
+    if os.path.isabs(argv[0]) and not os.path.isfile(argv[0]):
+        raise DirectorError("%s does not exist" % argv[0])
+    return _resolve(list(argv))
+
+
+def spawn_detached(argv: Sequence[str], cwd: Optional[str] = None) -> subprocess.Popen:
+    """Start a program meant to outlive the call -- Resolve, headless -- and return
+    its handle without waiting for it."""
+    command = _existing(argv)
+    kwargs = {}
+    if _WINDOWS:
+        kwargs["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0)
+                                   | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        return subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, cwd=cwd or None, close_fds=True,
+                                **kwargs)
+    except OSError as exc:
+        raise DirectorError("could not start %s: %s" % (command[0], exc))
+
+
+def run_lines(argv: Sequence[str], on_line: Callable[[str], None], timeout: float = 0.0,
+              should_cancel: Optional[Callable[[], bool]] = None,
+              on_cancel: Optional[Callable[[], None]] = None, grace: float = 0.0,
+              cwd: Optional[str] = None, env: Optional[Mapping[str, str]] = None,
+              poll: float = 0.25) -> CliResult:
+    """Run a long job to completion, handing `on_line` each line it prints as it
+    comes.
+
+    The first time `should_cancel` answers True, `on_cancel` is called and the job
+    gets `grace` seconds to finish by itself before its tree is killed; either
+    way DirectorCancelled is raised. A timeout kills at once. `on_line` runs on a
+    reader thread, and an exception from it never stops the job.
+    """
+    should_cancel = should_cancel or (lambda: False)
+    command = _existing(argv)
+    name = os.path.basename(argv[0])
+    kwargs = {}
+    if _WINDOWS:
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    else:
+        kwargs["start_new_session"] = True
+    merged = dict(os.environ)
+    merged.update(env or {})
+    merged.setdefault("PYTHONIOENCODING", "utf-8")
+    started = time.monotonic()
+    try:
+        proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, cwd=cwd or None, env=merged,
+                                text=True, encoding="utf-8", errors="replace", **kwargs)
+    except OSError as exc:
+        raise DirectorError("could not start %s: %s" % (command[0], exc))
+    lines: list[str] = []
+    errors: list[str] = []
+
+    def read_stdout():
+        for raw in proc.stdout:
+            line = _ANSI_RE.sub("", raw.rstrip("\r\n"))
+            lines.append(line)
+            try:
+                on_line(line)
+            except Exception:  # a progress display must never stop the job
+                pass
+
+    def read_stderr():
+        errors.append(proc.stderr.read())
+
+    readers = [(threading.Thread(target=read_stdout, daemon=True), proc.stdout),
+               (threading.Thread(target=read_stderr, daemon=True), proc.stderr)]
+    for reader, _ in readers:
+        reader.start()
+
+    def finish():
+        for reader, stream in readers:
+            reader.join(timeout=5)
+            # A pipe a grandchild still holds open keeps its reader blocked;
+            # closing it under that reader could hang here instead.
+            if not reader.is_alive():
+                stream.close()
+
+    cancelled_at = None
+    try:
+        while proc.poll() is None:
+            now = time.monotonic()
+            if cancelled_at is None and should_cancel():
+                cancelled_at = now
+                if on_cancel is not None:
+                    try:
+                        on_cancel()
+                    except Exception:  # the grace period still applies, then the kill
+                        pass
+            if cancelled_at is not None and now - cancelled_at >= grace:
+                raise DirectorCancelled("interrupted while %s was running" % name)
+            if timeout and now - started > timeout:
+                raise DirectorTimeout("%s did not finish within %.0f s" % (name, timeout))
+            time.sleep(poll)
+    except BaseException:
+        _kill_tree(proc)
+        try:
+            proc.wait(timeout=5)
+        except Exception:  # pragma: no cover - a child that will not die
+            pass
+        finish()
+        raise
+    finish()
+    if cancelled_at is not None:
+        raise DirectorCancelled("%s stopped after it was interrupted" % name)
+    return CliResult(command, "\n".join(lines), "".join(errors), proc.returncode,
                      time.monotonic() - started)
 
 

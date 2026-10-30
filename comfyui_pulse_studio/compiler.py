@@ -41,6 +41,7 @@ from .assets import (
 )
 from .constants import (
     AUDIO_ROLE_LIP_SYNC,
+    AUDIO_ROLE_TIMBRE,
     VOICE_GATE_TAIL_SECONDS,
     AUDIO_ROLE_RETENTION,
     BRANCH_FL2VA,
@@ -1704,7 +1705,8 @@ def _assemble_reference_prompt(timeline, index, total, bin_, tag_map, subject_li
     subject_lines = list(subject_lines)
     retention_lines = [
         "<Subject %d> %s: %s - matches `%s`."
-        % (n, _presence_clause("<Subject %d>" % n, shot_texts), retention, tag)
+        % (n, _presence_clause("<Subject %d>" % n, shot_texts), _visual_retention(retention),
+           tag)
         for n, tag, retention in retention_meta
     ]
 
@@ -1790,17 +1792,22 @@ def _assemble_reference_prompt(timeline, index, total, bin_, tag_map, subject_li
         # confuse and so nobody fills in `speaker`. Those films were asking for
         # lip sync in the subject definitions and saying nothing about it in
         # retention_analysis, which is half the instruction.
+        #
+        # The owner is named here without their speaker id: MiniMax's reference
+        # guide says "Do not write (Sx) in retention_analysis" -- the id belongs to
+        # the vocal events in subject_definitions and the shots.
         retention = AUDIO_ROLE_RETENTION.get(asset.audio_role)
+        owner = _without_speaker_id(who) if who else None
         if asset.audio_role == AUDIO_ROLE_LIP_SYNC:
             audio_retention_lines.append(
                 "`%s`%s: %s - this exact recording is what is heard, and %s moves "
                 "with it."
-                % (tag, (" (the voice of %s)" % who) if who else "", retention,
-                   "that mouth" if who else "the speaking character's mouth"))
-        elif retention and who:
+                % (tag, (" (the voice of %s)" % owner) if owner else "", retention,
+                   "that mouth" if owner else "the speaking character's mouth"))
+        elif retention and owner:
             audio_retention_lines.append(
                 "`%s` (the voice of %s): %s - %s"
-                % (tag, who, retention,
+                % (tag, owner, retention,
                    "borrow this voice's timbre and delivery; the words spoken are the "
                    "ones written in this window's shots."))
 
@@ -1808,7 +1815,8 @@ def _assemble_reference_prompt(timeline, index, total, bin_, tag_map, subject_li
         continuity_bits.append(
             "opening on the exact frame the previous window ended on -- the same pose, "
             "framing and light, continuing without a cut")
-    summary = _summary_line(subject_tag, continuity_bits, index, total)
+    summary = _summary_line(subject_tag, continuity_bits,
+                            _task_types(bin_, anchors, carry_image, carry_video, carry_audio))
 
     soundscape = timeline.overall_soundscape.strip()
     if carry_audio is not None:
@@ -1836,7 +1844,52 @@ def _assemble_reference_prompt(timeline, index, total, bin_, tag_map, subject_li
     return "\n\n".join(sections)
 
 
-def _summary_line(subject_tag, continuity_bits, index, total):
+#: A speaker id as the compiler stamps it after a name: " (S1)", " (S1,S2)".
+_SPEAKER_ID_RE = re.compile(r"\s*\(S\d+(?:\s*,\s*S\d+)*\)\s*$")
+
+
+def _without_speaker_id(who):
+    """'<Subject 2> (S1)' -> '<Subject 2>': a name as retention_analysis may write it."""
+    return _SPEAKER_ID_RE.sub("", who or "").strip()
+
+
+def _visual_retention(word):
+    """A picture's retention marker in MiniMax's visual vocabulary.
+
+    The bin stores `partially_copy` (constants.RETENTION_PARTIAL) and saved bins and
+    PulseCharacter combos keep doing so, but that is the guide's *audio* word; for a
+    <Subject>, <Picture> or <Video> it is `partially_preserved`. Translated here, at
+    the one place the word reaches the model, so no stored value has to change.
+    """
+    return "partially_preserved" if word == RETENTION_PARTIAL else word
+
+
+def _task_types(bin_, anchors, carry_image, carry_video, carry_audio):
+    """The summary's task-type prefix, in the words of MiniMax's reference guide.
+
+    "Each summary begins with a square-bracketed task-type prefix", combined with
+    " + ": `video continuation` when the window continues a source clip,
+    `reference generation` when references guide new content, `keyframe completion`
+    when a frame is pinned, `audio reuse` when a recording is copied in full or in
+    part, `audio reference` when only a voice's timbre is borrowed.
+    """
+    types = []
+    if carry_video is not None:
+        types.append("video continuation")
+    user_refs = [a for a in bin_ if not a.synthetic]
+    if user_refs or carry_image is not None or not types:
+        types.append("reference generation")
+    if anchors.get(GUIDE_FIRST):
+        types.append("keyframe completion")
+    audios = [a for a in user_refs if a.kind == KIND_AUDIO]
+    if carry_audio is not None or any(a.audio_role == AUDIO_ROLE_LIP_SYNC for a in audios):
+        types.append("audio reuse")
+    if any(a.audio_role == AUDIO_ROLE_TIMBRE for a in audios):
+        types.append("audio reference")
+    return types
+
+
+def _summary_line(subject_tag, continuity_bits, task_types):
     # A character's second view maps to their own Subject, so the same tag can
     # appear twice in the map; name each person once.
     tags = list(dict.fromkeys(subject_tag.values()))
@@ -1848,9 +1901,10 @@ def _summary_line(subject_tag, continuity_bits, index, total):
         base = "The target video shows %s and %s." % (", ".join(tags[:-1]), tags[-1])
     if continuity_bits:
         base = base.rstrip(".") + ", " + ", ".join(continuity_bits) + "."
-    if total > 1:
-        base = "[window %d of %d] " % (index + 1, total) + base
-    return base
+    # MiniMax's own marker, not the film's window count: "[window 2 of 4]" is
+    # bookkeeping the model was never shown, and a one-window film had no marker
+    # at all. The window number is in the report.
+    return "[%s] %s" % (" + ".join(task_types), base)
 
 
 def _assemble_base_prompt(timeline, index, total, bin_, tag_map, subject_lines,
@@ -1870,26 +1924,22 @@ def _assemble_base_prompt(timeline, index, total, bin_, tag_map, subject_lines,
     last_frame). <Picture N> here follows that append order exactly, so the
     numbering below must be derived from which anchors are actually present, not
     from a fixed slot.
+
+    The layout is the one MiniMax's base-mode guide prescribes: the image
+    alignment line first, on its own, then a blank line, then the three sections;
+    and no dialogue or lip-sync instruction in overall_soundscape, which is for
+    ambience, physical sound and non-verbal human sound.
     """
     has_first = "first_frame" in anchors
     has_last = "last_frame" in anchors
-    picture_n = 0
     lines = []
 
-    if has_first or has_last:
-        parts = []
-        if has_first:
-            picture_n += 1
-            parts.append("`<Picture %d>` aligns with the 0.00-second mark" % picture_n)
-        if has_last:
-            picture_n += 1
-            end_ts = format_timestamp(frames_to_seconds(frame_count - 1, timeline.fps))
-            parts.append("`<Picture %d>` aligns with the %s mark" % (picture_n, end_ts))
-        line = "How the reference pictures align with the target video — " + "; ".join(parts) + "."
-        if _continues(timeline, index):
-            line += (" Continue the ongoing action naturally from this pose and framing — "
-                     "no restart, no new take.")
-        lines.append(line)
+    alignment = _alignment_line(has_first, has_last, frame_count, timeline.fps,
+                                max(1, len(shot_lines)))
+    if (has_first or has_last) and _continues(timeline, index):
+        lines.append("Continue the ongoing action naturally from the opening frame's pose "
+                     "and framing — no restart, no new take." if has_first else
+                     "Continue the ongoing action naturally — no restart, no new take.")
 
     if timeline.style_line.strip():
         lines.append(timeline.style_line.strip())
@@ -1905,12 +1955,13 @@ def _assemble_base_prompt(timeline, index, total, bin_, tag_map, subject_lines,
         # The window's speech is a supplied recording (`drive_files`): it goes in
         # as the target audio under lock_source, and into the film under
         # use_reference_audio. Telling the model "no dialogue or vocalisation"
-        # here asked for a still mouth over the very voice it is meant to follow.
+        # asked for a still mouth over the very voice it is meant to follow. The
+        # match is asked for in the description, after the shots it covers --
+        # MiniMax's guide keeps lip-sync instructions out of the soundscape.
         heard = sorted({n for shots in (voice_shots or {}).values() for n in shots})
-        note = ("The speech heard%s is a recorded voice; the speaking character's lip "
-                "movements match it precisely, in time with it. No other voices."
-                % (_heard_in(heard) if heard else " in this window"))
-        soundscape = (soundscape + " " + note) if soundscape else note
+        lines.append("The speech heard%s is a recorded voice; the speaking character's lip "
+                     "movements match it precisely, in time with it. No other voices."
+                     % (_heard_in(heard) if heard else " in this window"))
     elif _continues(timeline, index):
         # This branch encodes no reference audio at all, so the window has no
         # sonic grounding. Left unconstrained, H3 tends to invent vocalisation.
@@ -1923,9 +1974,32 @@ def _assemble_base_prompt(timeline, index, total, bin_, tag_map, subject_lines,
                     "dialogue or vocalisation unless a shot explicitly includes spoken lines.")
             soundscape = (soundscape + " " + note) if soundscape else note
 
-    sections = []
+    sections = [alignment] if alignment else []
     if lines:
         sections.append("integrated_multimodal_description:\n" + "\n".join(lines))
     sections.append("overall_soundscape:\n" + (soundscape or "N/A"))
     sections.append("non_diegetic_music:\n" + (timeline.non_diegetic_music.strip() or "N/A"))
     return "\n\n".join(sections)
+
+
+def _alignment_line(has_first, has_last, frame_count, fps, last_shot):
+    """MiniMax's image-alignment sentence for a base-mode window, or "".
+
+    Verbatim from the base-mode guide's three templates -- FL2VA (both frames), I2VA
+    (first frame only), L2VA (last frame only). The end mark is the window's
+    effective duration with exactly two decimals (362 frames -> "15.08"), and the
+    last frame belongs to the window's final shot.
+    """
+    duration = "%.2f" % frames_to_seconds(frame_count, fps)
+    if has_first and has_last:
+        return ("How the reference pictures align with the target video — Picture 1 (from "
+                "Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 "
+                "(from Shot %d) aligns with the %s-second mark of the target video."
+                % (last_shot, duration))
+    if has_first:
+        return ("For the target video, at 0.00 seconds into the target video, <Picture 1> "
+                "(from [Shot 1]) is fully referenced.")
+    if has_last:
+        return ("<Picture 1> (from [Shot %d]) aligns with the %s-second mark of the target "
+                "video." % (last_shot, duration))
+    return ""

@@ -16,12 +16,21 @@ from .infinity_nodes import (  # noqa: E402
     NODE_CLASS_MAPPINGS as _INFINITY_CLASSES,
     NODE_DISPLAY_NAME_MAPPINGS as _INFINITY_NAMES,
 )
+# Pulse Resolve Super Scale, in its own module for the same reason.
+from .resolve_nodes import (  # noqa: E402
+    NODE_CLASS_MAPPINGS as _RESOLVE_CLASSES,
+    NODE_DISPLAY_NAME_MAPPINGS as _RESOLVE_NAMES,
+)
 
-_clash = set(NODE_CLASS_MAPPINGS) & set(_INFINITY_CLASSES)
-if _clash:  # pragma: no cover - a packaging mistake, caught at import
-    raise ImportError("node ids defined twice: %s" % ", ".join(sorted(_clash)))
-NODE_CLASS_MAPPINGS = dict(NODE_CLASS_MAPPINGS, **_INFINITY_CLASSES)
-NODE_DISPLAY_NAME_MAPPINGS = dict(NODE_DISPLAY_NAME_MAPPINGS, **_INFINITY_NAMES)
+NODE_CLASS_MAPPINGS = dict(NODE_CLASS_MAPPINGS)
+NODE_DISPLAY_NAME_MAPPINGS = dict(NODE_DISPLAY_NAME_MAPPINGS)
+for _classes, _names in ((_INFINITY_CLASSES, _INFINITY_NAMES),
+                         (_RESOLVE_CLASSES, _RESOLVE_NAMES)):
+    _clash = set(NODE_CLASS_MAPPINGS) & set(_classes)
+    if _clash:  # pragma: no cover - a packaging mistake, caught at import
+        raise ImportError("node ids defined twice: %s" % ", ".join(sorted(_clash)))
+    NODE_CLASS_MAPPINGS.update(_classes)
+    NODE_DISPLAY_NAME_MAPPINGS.update(_names)
 
 WEB_DIRECTORY = "./js"
 

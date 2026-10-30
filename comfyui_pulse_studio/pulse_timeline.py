@@ -35,7 +35,7 @@ import hashlib
 import json
 import uuid
 
-from .constants import FPS
+from .constants import BRANCH_FL2VA, FPS
 
 __all__ = [
     "SCHEMA",
@@ -47,6 +47,7 @@ __all__ = [
     "CONTINUITY_LAST_FRAME",
     "CONTINUITY_KEYFRAME_PAIRS",
     "CONTINUITY_REF_GUIDED",
+    "CONTINUITY_T2V",
     "ContinuityError",
     "SideChannel",
     "canonical_json",
@@ -55,6 +56,7 @@ __all__ = [
     "window_seed",
     "resolve_continuity",
     "check_continuity",
+    "continuity_branches",
     "ref_descriptor",
     "shot_block",
     "build_timeline",
@@ -80,12 +82,23 @@ CONTINUITY_INHERIT = "inherit"
 # blocks share one call (comfy/ldm/minimax/model.py, PackedLayout). EXPERIMENTAL:
 # the reference checkpoints were not trained with keyframe rows.
 CONTINUITY_REF_GUIDED = "ref_guided_carry"
+# Every window samples on fl2va, with no references: window 1 from the words alone
+# (or from shot 1's start_image, when it has one), each later window from the
+# previous window's last frame, pinned. Text to video. It is the whole film's
+# branch, so the checkpoint is the one on `model` -- a film on one branch has no
+# second checkpoint to need -- and the bin stays empty, because fl2va takes no
+# references. Replaces the hidden `"branch": "fl2va"` in timeline_data that the
+# first T2V graphs set by hand; that key still works, under `none`.
+CONTINUITY_T2V = "text_to_video"
 
 #: What a project may be set to. Appended, never inserted: a combo stores its value.
 CONTINUITY_MODES = (CONTINUITY_NONE, CONTINUITY_LAST_FRAME, CONTINUITY_KEYFRAME_PAIRS,
-                    CONTINUITY_REF_GUIDED)
-#: What a single shot may be set to -- the same three, plus deferring to the project.
-SHOT_CONTINUITY_MODES = (CONTINUITY_INHERIT,) + CONTINUITY_MODES
+                    CONTINUITY_REF_GUIDED, CONTINUITY_T2V)
+#: What a single shot may be set to -- deferring to the project, or one of the four
+#: that can change from shot to shot. Spelled out rather than derived: text_to_video
+#: is a project setting only, and the PulseShot combo keeps the list it always had.
+SHOT_CONTINUITY_MODES = (CONTINUITY_INHERIT, CONTINUITY_NONE, CONTINUITY_LAST_FRAME,
+                         CONTINUITY_KEYFRAME_PAIRS, CONTINUITY_REF_GUIDED)
 
 #: Modes that cannot run on the reference checkpoint alone.
 NEEDS_FL2VA = (CONTINUITY_LAST_FRAME, CONTINUITY_KEYFRAME_PAIRS)
@@ -109,7 +122,7 @@ def resolve_continuity(project_mode, shot_mode):
     """
     if shot_mode in (None, "", CONTINUITY_INHERIT):
         return project_mode
-    if shot_mode not in CONTINUITY_MODES:
+    if shot_mode not in SHOT_CONTINUITY_MODES:
         raise ContinuityError(
             "shot continuity must be one of %r, got %r" % (SHOT_CONTINUITY_MODES, shot_mode))
     return shot_mode
@@ -160,6 +173,24 @@ def check_continuity(shots, project_mode, fl2va_connected):
                 "shot's start frame with the next shot's start frame."
                 % (shot.get("label") or shot.get("shot_id"),))
     return problems
+
+
+def continuity_branches(continuity, branch):
+    """(branch, continuation_branch, guided_carry) for a project continuity mode.
+
+    `branch` is the film's own opening branch -- the stored document's, ref2va
+    unless it says otherwise. Pinning a frame *is* the fl2va branch: ComfyUI
+    exposes it as a different checkpoint with disjoint inputs, not as a setting.
+    So `last_frame_carry` moves the continuation windows there, `keyframe_pairs`
+    and `text_to_video` move every window there, `none` leaves the continuation
+    windows on whatever the film opened on, and `ref_guided_carry` stays there too
+    and pins the seam with a guide instead.
+    """
+    if continuity == CONTINUITY_LAST_FRAME:
+        return branch, BRANCH_FL2VA, False
+    if continuity in (CONTINUITY_KEYFRAME_PAIRS, CONTINUITY_T2V):
+        return BRANCH_FL2VA, BRANCH_FL2VA, False
+    return branch, branch, continuity == CONTINUITY_REF_GUIDED
 
 
 # ── identity (§6) ───────────────────────────────────────────────────────────
