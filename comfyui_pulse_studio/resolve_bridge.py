@@ -27,6 +27,7 @@ The helper imports TARGETS, MODES and CODECS from here, so the node's combos and
 the helper's choices are one list. Stdlib only: Resolve's Python imports this.
 """
 
+import json
 import ntpath
 import os
 import re
@@ -35,17 +36,19 @@ import time
 from .concat import upscale_size
 
 __all__ = [
-    "CODECS", "MODES", "TARGETS",
+    "CODECS", "MODES", "RESULT_PREFIX", "TARGETS", "TIERS",
     "OPEN_PROJECT_MODES", "OPEN_PROJECT_STOP", "OPEN_PROJECT_SWITCH",
     "WHEN_DONE_LEAVE", "WHEN_DONE_MODES", "WHEN_DONE_QUIT",
     "NATIVE_FILM", "RESOLVE_DIR_ENV", "TASKLIST_ARGV", "ResolveBridgeError",
     "already_delivered", "delivery_canvas", "discard_unfinished", "explain", "find_install",
-    "helper_argv", "native_film", "never_answered", "output_dir", "output_name",
-    "parse_progress", "parse_result", "resolve_listed",
+    "handoff_argv", "helper_argv", "native_film", "never_answered", "output_dir",
+    "output_name", "parse_handoff", "parse_progress", "parse_result", "resolve_listed",
 ]
 
 #: Delivery sizes Super Scale renders to, on Pulse's own `<target>_exact` canvas.
-TARGETS = ("1440p", "2160p")
+TARGETS = ("1080p", "1440p", "2160p")
+#: The delivery switches as they read on Pulse Resolve Deliver, and their targets.
+TIERS = (("1080p", "1080p"), ("2K", "1440p"), ("4K", "2160p"))
 #: Super Scale's multipliers. `auto` is 2x Enhanced with Resolve's own resize
 #: covering the rest, measured the best of them on a Pulse film (README).
 MODES = ("auto", "2x", "2x_enhanced", "3x", "4x")
@@ -73,8 +76,10 @@ NATIVE_FILM = "assembled.mp4"
 _DELIVERY_RE = re.compile(r"^assembled_.+\.mp4$", re.IGNORECASE)
 #: Under ComfyUI's output folder, for a film that does not already live there.
 FALLBACK_SUBDIR = "pulse_resolve"
-#: How the helper begins the one line it writes to stderr when it fails.
+#: How the helper begins the one line it writes to stderr when it fails, and the
+#: one line on stdout that says, as JSON, which file each target went to.
 ERROR_PREFIX = "resolve_superscale: "
+RESULT_PREFIX = "PULSE_RESULT "
 #: How the helper says Resolve's scripting never answered (see never_answered).
 NEVER_ANSWERED = "DaVinci Resolve did not answer within"
 _PROGRESS_RE = re.compile(r"^\s*(\d{1,3})(?:\.\d+)?\s*%\s*$")
@@ -172,6 +177,14 @@ def output_name(film, target):
     return "%s_%s_resolve.mp4" % (stem, target)
 
 
+#: Seconds a file's modification time may read before the moment it was written
+#: after. Windows stamps files from a coarser clock than time.time() reads, so a
+#: file written just after `since` can carry a stamp a hair before it. Two
+#: seconds also covers FAT's resolution; a film written that close before a run
+#: began could only be one the run itself wrote.
+CLOCK_SLACK = 2.0
+
+
 def discard_unfinished(path, since, wait=0.0, poll=0.5):
     """Remove the film a render that did not finish left behind.
 
@@ -183,7 +196,7 @@ def discard_unfinished(path, since, wait=0.0, poll=0.5):
     deadline = time.monotonic() + wait
     while True:
         try:
-            if os.path.getmtime(path) < since:
+            if os.path.getmtime(path) < since - CLOCK_SLACK:
                 return True
             os.remove(path)
             return True
@@ -203,24 +216,32 @@ def _within(path, root):
         return False
 
 
-def helper_argv(python_exe, helper, film, out_dir, stop_file, target="2160p", mode="auto",
+def helper_argv(python_exe, helper, film, out_dir, stop_file, targets=("2160p",), mode="auto",
                 sharpness=0.5, noise_reduction=0.5, codec="h265", switch_project=False,
                 quit_after=False, wait=180):
     """The command that runs tools/resolve_superscale.py under Resolve's Python.
 
+    One `--target` per size: the helper renders them all from one Resolve session.
     `--quit` belongs only to a Resolve the node started itself; a Resolve that was
     already open is the user's, and stays open.
     """
-    for value, allowed, label in ((target, TARGETS, "target"), (mode, MODES, "mode"),
-                                  (codec, CODECS, "codec")):
+    targets = list(targets)
+    if not targets:
+        raise ResolveBridgeError("switch on at least one size to deliver")
+    checks = [(t, TARGETS, "target") for t in targets] + [(mode, MODES, "mode"),
+                                                          (codec, CODECS, "codec")]
+    for value, allowed, label in checks:
         if value not in allowed:
             raise ResolveBridgeError("%s must be one of %s, got %r"
                                      % (label, ", ".join(allowed), value))
     for value, label in ((sharpness, "sharpness"), (noise_reduction, "noise_reduction")):
         if not 0.0 <= float(value) <= 1.0:
             raise ResolveBridgeError("%s must be between 0 and 1, got %r" % (label, value))
-    argv = [python_exe, helper, film, "--target", target, "--mode", mode,
-            "--sharpness", "%g" % float(sharpness), "--nr", "%g" % float(noise_reduction),
+    argv = [python_exe, helper, film]
+    for target in targets:
+        argv += ["--target", target]
+    argv += ["--mode", mode,
+             "--sharpness", "%g" % float(sharpness), "--nr", "%g" % float(noise_reduction),
             "--codec", codec, "--out", out_dir, "--wait", str(int(wait)),
             "--stop-file", stop_file]
     if switch_project:
@@ -240,36 +261,84 @@ def parse_progress(line):
 
 
 def parse_result(stdout, stderr, returncode, modified, since):
-    """The film the helper wrote, or ResolveBridgeError in the helper's own words.
+    """{target: file} the helper wrote, or ResolveBridgeError in its own words.
 
-    On success the helper's last line is the file it wrote. `modified(path)` is
-    that file's modification time, None when it is missing, and `since` is when
-    the helper started. A file older than that was not written by this render --
+    On success the helper prints one `PULSE_RESULT {json}` line. `modified(path)` is
+    a file's modification time, None when it is missing, and `since` is when the
+    helper started. A file older than that was not written by this render --
     Resolve wrote its film under another name, or wrote nothing -- and handing the
     old film on as the new one would be the worst way to fail.
     """
     if returncode == 0:
-        lines = [line.strip() for line in (stdout or "").splitlines() if line.strip()]
-        path = lines[-1] if lines else ""
-        stamp = modified(path) if path else None
-        if stamp is None:
-            raise ResolveBridgeError(
-                "Resolve's render finished, but the helper names no file it wrote%s."
-                % (" (its last line was %r)" % path if path else ""))
-        if stamp < since:
-            raise ResolveBridgeError(
-                "Resolve reported the render complete, but %s is older than this run: "
-                "Resolve wrote its film under another name, or not at all. Look in %s."
-                % (path, os.path.dirname(path)))
-        return path
+        written = _result(stdout)
+        if not isinstance(written, dict) or not written:
+            raise ResolveBridgeError("Resolve's render finished, but the helper names no "
+                                     "file it wrote.")
+        for target, path in written.items():
+            stamp = modified(path)
+            if stamp is None:
+                raise ResolveBridgeError("Resolve's %s render finished, but %s is not there."
+                                         % (target, path))
+            if stamp < since - CLOCK_SLACK:
+                raise ResolveBridgeError(
+                    "Resolve reported the %s render complete, but %s is older than this "
+                    "run: Resolve wrote its film under another name, or not at all. Look in "
+                    "%s." % (target, path, os.path.dirname(path)))
+        return written
+    raise _failure(stdout, stderr, returncode)
+
+
+def _result(stdout):
+    """The helper's `PULSE_RESULT {json}` line, parsed, or None."""
+    found = [line.strip()[len(RESULT_PREFIX):] for line in (stdout or "").splitlines()
+             if line.strip().startswith(RESULT_PREFIX)]
+    try:
+        return json.loads(found[-1]) if found else None
+    except ValueError:
+        return None
+
+
+def _failure(stdout, stderr, returncode):
+    """A failed helper's own words, as ResolveBridgeError."""
     said = [line.strip()[len(ERROR_PREFIX):] for line in (stderr or "").splitlines()
             if line.strip().startswith(ERROR_PREFIX)]
     if said:
-        raise ResolveBridgeError(explain(said[-1]))
+        return ResolveBridgeError(explain(said[-1]))
     last = [line.strip() for line in (stderr or "").splitlines() if line.strip()] or \
         [line.strip() for line in (stdout or "").splitlines() if line.strip()]
-    raise ResolveBridgeError("Resolve's Python stopped with exit code %s%s"
-                             % (returncode, ": " + last[-1] if last else ""))
+    return ResolveBridgeError("Resolve's Python stopped with exit code %s%s"
+                              % (returncode, ": " + last[-1] if last else ""))
+
+
+def handoff_argv(python_exe, helper, picture, stems, name, stop_file, switch_project=False,
+                 quit_after=False, wait=180):
+    """The command that runs tools/resolve_handoff.py: the picture, and one
+    `--stem LABEL=FILE` per stem, in track order."""
+    stems = list(stems)
+    if not stems:
+        raise ResolveBridgeError("nothing to hand off: no stem was written")
+    argv = [python_exe, helper, "--picture", picture]
+    for label, path in stems:
+        if "=" in label:
+            raise ResolveBridgeError("a stem's label cannot hold '=': %r" % (label,))
+        argv += ["--stem", "%s=%s" % (label, path)]
+    argv += ["--name", name, "--wait", str(int(wait)), "--stop-file", stop_file]
+    if switch_project:
+        argv.append("--switch-project")
+    if quit_after:
+        argv.append("--quit")
+    return argv
+
+
+def parse_handoff(stdout, stderr, returncode):
+    """The project the hand-off saved, or ResolveBridgeError in the helper's words."""
+    if returncode == 0:
+        written = _result(stdout)
+        if isinstance(written, dict) and written.get("project"):
+            return written["project"]
+        raise ResolveBridgeError("Resolve's hand-off finished, but the helper names no "
+                                 "project it saved.")
+    raise _failure(stdout, stderr, returncode)
 
 
 def never_answered(stderr):

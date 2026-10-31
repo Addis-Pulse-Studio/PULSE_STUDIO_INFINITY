@@ -35,7 +35,8 @@ NODES_PY = PROJECT_ROOT / "nodes.py"
 # Resolve Super Scale; every AST helper below reads all three files.
 INFINITY_PY = PROJECT_ROOT / "infinity_nodes.py"
 RESOLVE_PY = PROJECT_ROOT / "resolve_nodes.py"
-NODE_SOURCES = (NODES_PY, INFINITY_PY, RESOLVE_PY)
+AUDIO_PY = PROJECT_ROOT / "audio_nodes.py"
+NODE_SOURCES = (NODES_PY, INFINITY_PY, RESOLVE_PY, AUDIO_PY)
 CONSTANTS_PY = PROJECT_ROOT / "comfyui_pulse_studio" / "constants.py"
 
 NODE = shutil.which("node")
@@ -61,7 +62,8 @@ NODE_CLASSES = ("PulseSlate", "PulseShot", "PulseVoice", "PulseRender", "PulseBe
                 "PulseRetake", "PulseStill", "PulseLipSyncSegment", "PulseLipSyncPaste",
                 "PulseRecipe", "PulseCharacter",
                 "PulseInfinityLoopController", "PulseDynamicShot", "PulseInfinityRender",
-                "PulseObserver", "PulseResolveSuperScale")
+                "PulseObserver", "PulseResolveSuperScale", "PulseResolveDeliver",
+                "PulseAudioTimeline", "PulseAudioExport")
 
 
 def _class_nodes():
@@ -380,6 +382,9 @@ class TestInputAndOutputOrderIsFrozen(unittest.TestCase):
                                 "model_fl2va"],
         "PulseObserver": ["beat", "infinity", "images", "audio"],
         "PulseResolveSuperScale": ["video"],
+        "PulseResolveDeliver": ["video"],
+        "PulseAudioTimeline": ["timeline"],
+        "PulseAudioExport": ["video", "timeline", "music", "sfx", "foley", "ambience"],
     }
 
     EXPECTED_OUTPUTS = {
@@ -411,6 +416,10 @@ class TestInputAndOutputOrderIsFrozen(unittest.TestCase):
                                 ["video", "frames", "audio", "beat", "report"]),
         "PulseObserver": (["STRING", "IMAGE", "STRING"], ["report", "evidence", "next_beat"]),
         "PulseResolveSuperScale": (["VIDEO", "STRING", "STRING"], ["video", "path", "report"]),
+        "PulseResolveDeliver": (["VIDEO", "VIDEO", "VIDEO", "STRING", "STRING"],
+                                ["video_1080p", "video_2k", "video_4k", "paths", "report"]),
+        "PulseAudioTimeline": (["AUDIO", "STRING", "STRING"], ["dialogue", "placements", "report"]),
+        "PulseAudioExport": (["STRING", "STRING"], ["folder", "report"]),
     }
 
     #: §4. Both languages must agree on how many sockets each group has, or the

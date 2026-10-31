@@ -29,6 +29,8 @@ recursive-include director_workspace *.md
 # the .bat is the same helper by drag and drop.
 include tools/resolve_superscale.py
 include tools/resolve_superscale.bat
+# Pulse Audio Export's Fairlight hand-off, run the same way.
+include tools/resolve_handoff.py
 
 # The GPL-3.0 reference tree is reviewed for feature ideas only; code from it
 # would relicense this whole project. .gitignore keeps it out of git, which is

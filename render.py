@@ -80,6 +80,7 @@ from .comfyui_pulse_studio.fingerprint import (
     patch_warnings,
 )
 from .comfyui_pulse_studio.patches import check_single_checkpoint
+from .comfyui_pulse_studio.pulse_audio import SOUND_FILE
 from .comfyui_pulse_studio.pulse_timeline import socket_slot_of
 from .comfyui_pulse_studio.report import build_report
 from .comfyui_pulse_studio.segcache import (
@@ -1083,6 +1084,15 @@ def run(timeline_dict, side, model, vae, audio_vae, model_fl2va=None,
     except Exception as exc:  # pragma: no cover - decode failure
         log.error("[PulseStudio] could not join the segment audio (%s)", exc)
         audio_out = None
+
+    # H3's own track, as joined, kept beside the film before any recording replaces
+    # it below: Pulse Audio Export's h3_sound stem. Lossless, and never allowed to
+    # raise -- it is a copy of what the segments already hold.
+    if audio_out is not None and video_files:
+        try:
+            media.write_segment_audio(os.path.join(directory, SOUND_FILE), audio_out)
+        except Exception as exc:  # pragma: no cover - a disk problem
+            log.warning("[PulseStudio] could not keep H3's own track (%s)", exc)
 
     if options.audio_mode != AUDIO_MODE_REFERENCE and not options.use_reference_audio:
         warnings.append(

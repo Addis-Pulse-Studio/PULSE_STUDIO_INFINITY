@@ -370,6 +370,41 @@ const SPECS = {
       { name: "free_vram", kind: "boolean" },
     ],
   },
+  // Pulse Resolve Deliver (resolve_nodes.py): 1080p / 2K / 4K switched on and off.
+  PulseResolveDeliver: {
+    "3.0.0": [
+      { name: "schema_version", kind: "string" },
+      { name: "deliver_1080p", kind: "boolean" },
+      { name: "deliver_2k", kind: "boolean" },
+      { name: "deliver_4k", kind: "boolean" },
+      { name: "mode", kind: "string" },
+      { name: "sharpness", kind: "number" },
+      { name: "noise_reduction", kind: "number" },
+      { name: "codec", kind: "string" },
+      { name: "open_project", kind: "string" },
+      { name: "when_done", kind: "string" },
+      { name: "free_vram", kind: "boolean" },
+    ],
+  },
+  // Pulse Audio (audio_nodes.py): the dialogue on the film clock, and the stems.
+  PulseAudioTimeline: {
+    "3.0.0": [
+      { name: "schema_version", kind: "string" },
+      { name: "speaker", kind: "string" },
+      { name: "recordings", kind: "string" },
+    ],
+  },
+  PulseAudioExport: {
+    "3.0.0": [
+      { name: "schema_version", kind: "string" },
+      { name: "per_speaker", kind: "boolean" },
+      { name: "sample_rate", kind: "string" },
+      { name: "bit_depth", kind: "string" },
+      { name: "handoff", kind: "string" },
+      { name: "open_project", kind: "string" },
+      { name: "when_done", kind: "string" },
+    ],
+  },
 };
 
 /** Names only, in the shape spec §3.3 describes: WIDGET_NAMES[class][version]. */

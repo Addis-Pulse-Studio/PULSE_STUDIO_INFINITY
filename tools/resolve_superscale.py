@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Upscale a finished Pulse film to 2K or 4K with DaVinci Resolve Studio's Super Scale.
+"""Upscale a finished Pulse film to 1080p, 2K or 4K with DaVinci Resolve Studio's Super Scale.
 
-    tools\\resolve_superscale.bat <film.mp4 | run folder> [--target 1440p]   (or drag and drop)
+    tools\\resolve_superscale.bat <film.mp4 | run folder> [--target 1440p ...]   (or drag and drop)
     ResolvePython.exe tools\\resolve_superscale.py <film.mp4 | run folder> [options]
 
 Pulse Render's `upscale` delivers inside the graph: `_exact` with Lanczos, `_rtx`
@@ -12,16 +12,18 @@ already-upscaled copy.
 
 In a throwaway project, which it deletes afterwards:
 
-  1. a timeline at the delivery canvas -- 3840x2160 or 2560x1440, turned for
-     portrait, square for square: the same canvas Pulse's own `_exact` and `_rtx`
-     modes deliver -- with input sizing `scaleToCrop` (cover, then centre-crop),
-     at the film's frame rate;
+  1. a timeline at the delivery canvas -- 3840x2160, 2560x1440 or 1920x1080,
+     the largest of the targets asked for, turned for portrait, square for
+     square: the same canvas Pulse's own `_exact` and `_rtx` modes deliver --
+     with input sizing `scaleToCrop` (cover, then centre-crop), at the film's
+     frame rate;
   2. the film, with Super Scale set on its clip: by default 2x Enhanced, the
      mode with sharpness and noise reduction, with Resolve's own resize covering
      the rest of the way to the canvas -- measured the best of Resolve's modes on
      a Pulse film (see ENHANCED_REACH);
-  3. one render: MP4, H.265 with Resolve's own encoder, audio kept, written
-     beside the film as `<name>_<target>_resolve.mp4`.
+  3. one render per target -- `--target` repeats -- MP4, H.265 with Resolve's
+     own encoder, audio kept, written beside the film as
+     `<name>_<target>_resolve.mp4`, and a `PULSE_RESULT` line naming them.
 
 It talks only to the Resolve on this machine, through Resolve's own scripting
 module, and starts nothing: `resolve_superscale.bat` launches Resolve headless
@@ -38,6 +40,7 @@ tests/test_delivery.py without Resolve.
 """
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -50,6 +53,7 @@ from comfyui_pulse_studio.resolve_bridge import (  # noqa: E402
     CODECS,
     MODES,
     NATIVE_FILM,
+    RESULT_PREFIX,
     TARGETS,
     delivery_canvas,
     discard_unfinished,
@@ -86,12 +90,12 @@ def stop_requested(stop_file):
     return bool(stop_file) and os.path.exists(stop_file)
 
 
-def unfinished(error, path, since):
-    """`error`, once the film its render left unfinished is removed. While Resolve
-    still holds that file open, the error carries it, for main() to remove once
-    Resolve has quit."""
-    if not discard_unfinished(path, since, wait=UNFINISHED_WAIT):
-        error.unfinished = (path, since)
+def unfinished(error, paths, since):
+    """`error`, once the films its render left unfinished are removed. Those Resolve
+    still holds open ride on the error, for main() to remove once Resolve has quit."""
+    left = [p for p in paths if not discard_unfinished(p, since, wait=UNFINISHED_WAIT)]
+    if left:
+        error.unfinished = (left, since)
     return error
 
 
@@ -231,15 +235,36 @@ def connect(timeout, stop_file=None):
 def superscale(resolve, src, target="2160p", mode="auto", sharpness=0.5, noise_reduction=0.5,
                codec="h265", out_dir=None, keep_project=False, switch_project=False,
                stop_file=None, say=print):
-    """Render `src` through Super Scale at `target`. Returns the file written.
+    """Render `src` through Super Scale at `target`. Returns the file written."""
+    return deliver(resolve, src, [target], mode=mode, sharpness=sharpness,
+                   noise_reduction=noise_reduction, codec=codec, out_dir=out_dir,
+                   keep_project=keep_project, switch_project=switch_project,
+                   stop_file=stop_file, say=say)[target]
+
+
+def deliver(resolve, src, targets, mode="auto", sharpness=0.5, noise_reduction=0.5,
+            codec="h265", out_dir=None, keep_project=False, switch_project=False,
+            stop_file=None, say=print):
+    """Render `src` through Super Scale at every one of `targets`, in one project.
+
+    Returns {target: file written}. The timeline is built once, at the largest
+    target's canvas, with Super Scale chosen for that canvas; each target is then
+    a render job of its own at its own size -- Resolve scales the timeline down
+    for the smaller ones -- so one import and one Resolve session serve them all.
 
     Resolve holds one project at a time, so making the temporary one closes
     whatever is open. A project of yours is not closed unless `switch_project`
     says so, and then it is loaded again afterwards.
 
-    When `stop_file` appears the render is stopped and its partial file removed,
-    and the temporary project is deleted as it always is.
+    When `stop_file` appears the render is stopped and the unfinished files
+    removed, and the temporary project is deleted as it always is.
     """
+    targets = [t for i, t in enumerate(targets) if t not in targets[:i]]
+    if not targets:
+        raise SuperScaleError("no target to render: name at least one of %s" % ", ".join(TARGETS))
+    for target in targets:
+        if target not in TARGETS:
+            raise SuperScaleError("target must be one of %s, got %r" % (", ".join(TARGETS), target))
     if stop_requested(stop_file):
         raise SuperScaleError("stopped before the render began: the stop file appeared")
     manager = resolve.GetProjectManager()
@@ -255,7 +280,7 @@ def superscale(resolve, src, target="2160p", mode="auto", sharpness=0.5, noise_r
     project = manager.CreateProject(name)
     if project is None:
         raise SuperScaleError("Resolve would not create the project %r" % name)
-    job = None
+    jobs = []
     try:
         pool = project.GetMediaPool()
         # A plain list of paths. Resolve 21.1.1 answers None to the [{"FilePath": ...}]
@@ -265,11 +290,13 @@ def superscale(resolve, src, target="2160p", mode="auto", sharpness=0.5, noise_r
             raise SuperScaleError("Resolve could not import %s" % src)
         clip = items[0]
         width, height = parse_resolution(clip.GetClipProperty("Resolution"))
-        canvas_w, canvas_h = canvas(width, height, target)
+        canvases = {t: canvas(width, height, t) for t in targets}
+        largest = max(targets, key=lambda t: canvases[t][0] * canvases[t][1])
+        canvas_w, canvas_h = canvases[largest]
         multiplier, enhanced, note = superscale_for(width, height, canvas_w, canvas_h, mode)
-        say("%s: %dx%d -> Super Scale %s -> %dx%d"
+        say("%s: %dx%d -> Super Scale %s -> %s"
             % (os.path.basename(src), width, height, describe(multiplier, enhanced),
-               canvas_w, canvas_h))
+               ", ".join("%dx%d" % canvases[t] for t in targets)))
         if note:
             say("note: " + note)
 
@@ -299,25 +326,32 @@ def superscale(resolve, src, target="2160p", mode="auto", sharpness=0.5, noise_r
 
         encoder = pick_codec(project.GetRenderCodecs("mp4"), codec)
         out_dir = out_dir or os.path.dirname(src)
-        out_file = output_name(src, target)
         project.SetCurrentRenderMode(1)  # one file for the whole timeline
         if not project.SetCurrentRenderFormatAndCodec("mp4", encoder):
             raise SuperScaleError("Resolve refused MP4 / %s" % encoder)
-        if not project.SetRenderSettings({
-                "SelectAllFrames": True, "TargetDir": out_dir,
-                "CustomName": os.path.splitext(out_file)[0], "ExportVideo": True,
-                "ExportAudio": True, "FormatWidth": canvas_w, "FormatHeight": canvas_h}):
-            raise SuperScaleError("Resolve refused the render settings")
-        if not project.SetRenderSettings({"VideoQuality": "Best"}):
-            say("note: Resolve sets %s's bitrate itself (it takes no quality setting "
-                "from a script)" % encoder)
-
-        out_path = os.path.join(out_dir, out_file)
+        noted = False
         began = time.time()
-        job = project.AddRenderJob()
-        if not job or not project.StartRendering([job]):
+        for target in targets:
+            out_file = output_name(src, target)
+            w, h = canvases[target]
+            if not project.SetRenderSettings({
+                    "SelectAllFrames": True, "TargetDir": out_dir,
+                    "CustomName": os.path.splitext(out_file)[0], "ExportVideo": True,
+                    "ExportAudio": True, "FormatWidth": w, "FormatHeight": h}):
+                raise SuperScaleError("Resolve refused the render settings for %s" % target)
+            if not noted and not project.SetRenderSettings({"VideoQuality": "Best"}):
+                say("note: Resolve sets %s's bitrate itself (it takes no quality setting "
+                    "from a script)" % encoder)
+            noted = True
+            job = project.AddRenderJob()
+            if not job:
+                raise SuperScaleError("Resolve would not queue the %s render" % target)
+            jobs.append((target, job, os.path.join(out_dir, out_file)))
+
+        if not project.StartRendering([job for _, job, _ in jobs]):
             raise SuperScaleError("Resolve would not start the render")
-        say("rendering %s with %s ..." % (out_file, encoder))
+        say("rendering %s with %s ..." % (", ".join(os.path.basename(p) for _, _, p in jobs),
+                                          encoder))
         shown = None
         while project.IsRenderingInProgress():
             if stop_requested(stop_file):
@@ -327,24 +361,30 @@ def superscale(resolve, src, target="2160p", mode="auto", sharpness=0.5, noise_r
                         break
                     time.sleep(1)
                 raise unfinished(SuperScaleError("stopped: the render was cancelled part-way"),
-                                 out_path, began)
-            done = (project.GetRenderJobStatus(job) or {}).get("CompletionPercentage")
-            if done is not None and done != shown:
-                say("  %s%%" % done)
-                shown = done
+                                 [p for _, _, p in jobs], began)
+            done = [(project.GetRenderJobStatus(job) or {}).get("CompletionPercentage") or 0
+                    for _, job, _ in jobs]
+            overall = int(sum(done) / len(done))
+            if overall != shown:
+                say("  %s%%" % overall)
+                shown = overall
             time.sleep(2)
-        status = project.GetRenderJobStatus(job) or {}
-        if status.get("JobStatus") != "Complete":
-            raise unfinished(SuperScaleError("Resolve's render ended %s %s"
-                                             % (status.get("JobStatus"), status.get("Error", ""))),
-                             out_path, began)
-        return out_path
+        failed = []
+        for target, job, path in jobs:
+            status = project.GetRenderJobStatus(job) or {}
+            if status.get("JobStatus") != "Complete":
+                failed.append((target, path, status))
+        if failed:
+            raise unfinished(SuperScaleError("Resolve's render ended %s" % "; ".join(
+                "%s %s %s" % (t, s.get("JobStatus"), s.get("Error", "")) for t, _, s in failed)),
+                [p for _, p, _ in failed], began)
+        return {target: path for target, _, path in jobs}
     finally:
         if keep_project:
             manager.SaveProject()
             say("kept the Resolve project %r" % name)
         else:
-            if job:
+            for _, job, _ in jobs:
                 project.DeleteRenderJob(job)
             manager.CloseProject(project)
             manager.DeleteProject(name)
@@ -371,7 +411,9 @@ def main(argv=None):
         description="Upscale a finished Pulse film to 2K/4K with DaVinci Resolve Studio's "
                     "Super Scale.")
     parser.add_argument("film", help="a film, or a Pulse run folder (its assembled.mp4)")
-    parser.add_argument("--target", choices=TARGETS, default="2160p")
+    parser.add_argument("--target", choices=TARGETS, action="append",
+                        help="1080p, 1440p or 2160p (default 2160p); repeat it to render "
+                             "several from one Resolve session")
     parser.add_argument("--mode", choices=MODES, default="auto",
                         help="Super Scale multiplier; auto: 2x Enhanced, with Resolve's "
                              "resize covering the rest (up to 1.5x), else 3x or 4x")
@@ -407,24 +449,28 @@ def main(argv=None):
         resolve = connect(args.wait, stop_file=args.stop_file)
         print("%s %s" % (resolve.GetProductName(), resolve.GetVersionString()))
         try:
-            out = superscale(resolve, src, target=args.target, mode=args.mode,
-                             sharpness=args.sharpness, noise_reduction=args.nr,
-                             codec=args.codec,
-                             out_dir=args.out and os.path.abspath(windows_path(args.out)),
-                             keep_project=args.keep_project,
-                             switch_project=args.switch_project,
-                             stop_file=args.stop_file)
+            out = deliver(resolve, src, args.target or ["2160p"], mode=args.mode,
+                          sharpness=args.sharpness, noise_reduction=args.nr,
+                          codec=args.codec,
+                          out_dir=args.out and os.path.abspath(windows_path(args.out)),
+                          keep_project=args.keep_project,
+                          switch_project=args.switch_project,
+                          stop_file=args.stop_file)
         finally:
             if args.quit:
                 resolve.Quit()
     except SuperScaleError as exc:
-        left = getattr(exc, "unfinished", None)
-        if left and not discard_unfinished(*left, wait=QUIT_RELEASE_WAIT if args.quit else 0):
-            print("note: Resolve still holds the unfinished %s, so it is left there" % left[0],
-                  file=sys.stderr)
+        left, since = getattr(exc, "unfinished", None) or ((), None)
+        wait = QUIT_RELEASE_WAIT if args.quit else 0
+        for path in left:
+            if not discard_unfinished(path, since, wait=wait):
+                print("note: Resolve still holds the unfinished %s, so it is left there"
+                      % path, file=sys.stderr)
         print("resolve_superscale: %s" % exc, file=sys.stderr)
         return 1
-    print(out)
+    print(RESULT_PREFIX + json.dumps(out))
+    for path in out.values():
+        print(path)
     return 0
 
 

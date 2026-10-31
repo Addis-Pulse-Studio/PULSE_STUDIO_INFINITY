@@ -183,8 +183,9 @@ class ResolvesDecisions(unittest.TestCase):
         self.assertEqual(TOOL.canvas(992, 992, "2160p"), (2160, 2160))
         self.assertEqual(TOOL.canvas(1344, 768, "2160p"),
                          upscale_size(1344, 768, "2160p_rtx")[2:])
+        self.assertEqual(TOOL.canvas(1344, 768, "1080p"), (1920, 1080))
         with self.assertRaises(TOOL.SuperScaleError):
-            TOOL.canvas(1344, 768, "1080p")
+            TOOL.canvas(1344, 768, "720p")
 
     def test_auto_is_2x_enhanced_for_every_pulse_canvas(self):
         # measured the best of Resolve's modes, 1344x768 to 4K (ENHANCED_REACH)
@@ -372,6 +373,69 @@ class ResolveIsDrivenAsDocumented(unittest.TestCase):
         self.assertIn("Studio", str(raised.exception))
 
 
+class SeveralSizesFromOneSession(unittest.TestCase):
+    """Pulse Resolve Deliver: 1080p, 2K and 4K switched on render in one project."""
+
+    def _run(self, fake, targets):
+        with mock.patch.object(TOOL.time, "sleep"):
+            return TOOL.deliver(fake, os.path.join("films", "run", "assembled.mp4"), targets,
+                                say=lambda *a: None)
+
+    def test_one_project_one_timeline_one_job_per_size(self):
+        fake = _Resolve()
+        out = self._run(fake, ["1080p", "1440p", "2160p"])
+        run = os.path.join("films", "run")
+        self.assertEqual(out, {t: os.path.join(run, "assembled_%s_resolve.mp4" % t)
+                               for t in ("1080p", "1440p", "2160p")})
+        self.assertEqual(len(fake.named("CreateProject")), 1)
+        self.assertEqual(len(fake.named("ImportMedia")), 1)
+        # The timeline is built at the largest size, Super Scale chosen for it ...
+        settings = fake.named("SetSettings")[0][1]
+        self.assertEqual((settings["timelineResolutionWidth"],
+                          settings["timelineResolutionHeight"]), ("3840", "2160"))
+        self.assertEqual(fake.clip.super_scale, ("Super Scale", 2, 0.5, 0.5))
+        # ... and each size is a render job at its own size and name.
+        sizes = [(r[1]["FormatWidth"], r[1]["FormatHeight"], r[1]["CustomName"])
+                 for r in fake.named("SetRenderSettings") if "FormatWidth" in r[1]]
+        self.assertEqual(sizes, [(1920, 1080, "assembled_1080p_resolve"),
+                                 (2560, 1440, "assembled_1440p_resolve"),
+                                 (3840, 2160, "assembled_2160p_resolve")])
+        self.assertEqual(len(fake.named("AddRenderJob")), 3)
+        self.assertEqual(len(fake.named("StartRendering")), 1)
+        self.assertEqual(len(fake.named("DeleteRenderJob")), 3)
+        self.assertEqual(fake.named("DeleteProject")[0][1], fake.named("CreateProject")[0][1])
+
+    def test_a_vertical_film_gets_vertical_sizes(self):
+        fake = _Resolve(resolution="768x1344")
+        self._run(fake, ["1080p", "2160p"])
+        sizes = [(r[1]["FormatWidth"], r[1]["FormatHeight"])
+                 for r in fake.named("SetRenderSettings") if "FormatWidth" in r[1]]
+        self.assertEqual(sizes, [(1080, 1920), (2160, 3840)])
+
+    def test_a_repeated_or_unknown_size(self):
+        fake = _Resolve()
+        self.assertEqual(list(self._run(fake, ["2160p", "2160p"])), ["2160p"])
+        for targets in ([], ["720p"]):
+            with self.assertRaises(TOOL.SuperScaleError):
+                self._run(_Resolve(), targets)
+
+    def test_main_names_each_file_on_one_result_line(self):
+        import io
+        import json
+        fake = _Resolve()
+        out = io.StringIO()
+        with mock.patch.object(TOOL, "connect", return_value=fake), \
+                mock.patch.object(TOOL.os.path, "isfile", return_value=True), \
+                mock.patch.object(TOOL.time, "sleep"), mock.patch.object(sys, "stdout", out):
+            code = TOOL.main([os.path.join("films", "run", "assembled.mp4"),
+                              "--target", "1080p", "--target", "2160p"])
+        self.assertEqual(code, 0)
+        result = [l for l in out.getvalue().splitlines() if l.startswith("PULSE_RESULT ")]
+        self.assertEqual(len(result), 1)
+        self.assertEqual(sorted(json.loads(result[0][len("PULSE_RESULT "):])),
+                         ["1080p", "2160p"])
+
+
 class _StoppedMidRender(_Resolve):
     """A render that is under way when the stop file appears, with a partial film
     on disk, as Pulse Resolve Super Scale's Cancel finds it."""
@@ -423,9 +487,11 @@ class ResolveStopsWhenAsked(unittest.TestCase):
         with mock.patch.object(TOOL, "discard_unfinished", return_value=False):
             with self.assertRaises(TOOL.SuperScaleError) as raised:
                 self._run(fake)
-        path, since = raised.exception.unfinished
-        self.assertEqual(path, self.out)
-        self.assertLessEqual(since, os.path.getmtime(self.out))
+        paths, since = raised.exception.unfinished
+        self.assertEqual(paths, [self.out])
+        # main() removes it only if it reads as this render's file.
+        from comfyui_pulse_studio.resolve_bridge import CLOCK_SLACK
+        self.assertLessEqual(since - CLOCK_SLACK, os.path.getmtime(self.out))
 
     def test_the_never_answered_message_is_the_one_the_node_looks_for(self):
         from comfyui_pulse_studio.resolve_bridge import never_answered
@@ -480,7 +546,7 @@ class TheNodeAndTheHelperAgree(unittest.TestCase):
         from comfyui_pulse_studio.resolve_bridge import helper_argv
         argv = helper_argv("ResolvePython.exe", "resolve_superscale.py",
                            os.path.join("nowhere", "assembled.mp4"), "out", "stop",
-                           target="1440p", mode="2x_enhanced", sharpness=0.3,
+                           targets=["1080p", "1440p"], mode="2x_enhanced", sharpness=0.3,
                            noise_reduction=0.1, codec="h264", switch_project=True,
                            quit_after=True)
         out, err = io.StringIO(), io.StringIO()

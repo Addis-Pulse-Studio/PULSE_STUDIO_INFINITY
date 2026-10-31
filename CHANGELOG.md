@@ -4,6 +4,66 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Pulse Resolve Deliver: 1080p, 2K and 4K from one Resolve session
+
+Pulse Resolve Super Scale delivers one size per run. **Pulse Resolve Deliver**
+switches 1080p, 2K and 4K on and off, and makes every size switched on in one
+Resolve session.
+
+- Widgets: `deliver_1080p`, `deliver_2k`, `deliver_4k` (only 4K is on by
+  default), then the Super Scale node's own.
+- Outputs: `video_1080p`, `video_2k`, `video_4k`, `paths` and `report`.
+- A size switched off returns `ExecutionBlocker(None)`, so its Save node is
+  skipped with no error. All three off is an error that names the switches.
+- Resolve starts once. The timeline is built at the largest canvas, with Super
+  Scale chosen for it, and each size is a render job of its own at its canvas.
+- `tools/resolve_superscale.py` takes `--target` more than once, and `1080p`.
+  It prints a `PULSE_RESULT {json}` line naming every file it wrote. The nodes
+  read that line, and still check that each file is new. Stopping or failing
+  removes every size's unfinished file.
+- Pulse Resolve Super Scale's `target` gains `1080p`.
+- One function, `resolve_nodes._resolve_session`, now runs the Resolve session
+  for both nodes and the Fairlight hand-off: the start, the restart after a cold
+  start, Cancel through the stop file, and the quit.
+
+Run live: a 15 s film went to 1080p, 2K and 4K in 57 s, including Resolve's
+start and quit.
+
+### Pulse Audio, phase 1: Audio Timeline and Audio Export
+
+Pika advertises "audio stems" from its hosted API. Two stems need no separation
+model, because Pulse placed them itself: the dialogue and H3's own sound.
+
+- Pulse Render keeps H3's own track beside the film, as `assembled_sound.flac`,
+  before any recording replaces it.
+- **Pulse Audio Timeline** returns the timeline's dialogue as one film-length
+  track, placed, trimmed and gated to its shots exactly as Pulse Render lays it.
+  - It covers everyone, or one character through `speaker`.
+  - It also returns a placements table and a report.
+  - `recordings` chooses `final` (each Pulse Voice's clean take) or `drive`.
+  - It runs before the render.
+- **Pulse Audio Export** writes `stems/` beside a rendered film: `dialogue.wav`,
+  one `dialogue_<Name>.wav` per character, `h3_sound.wav`, `mix.wav`, and any
+  `music` / `sfx` / `foley` / `ambience` wired in.
+  - Every stem is cut or padded to the film's length, at 48 or 44.1 kHz, 16- or
+    24-bit or 32-bit float.
+  - `stems.json` records the film, the shots, each stem's loudness and peak, and
+    the placements.
+- `handoff` `resolve_fairlight` builds a kept Resolve project:
+  - the picture on V1, video only;
+  - each stem on a named audio track of its own, from the first frame.
+  `tools/resolve_handoff.py` builds it under Resolve's own Python.
+- `media.write_wav` writes PCM through PyAV. The decisions are pure functions in
+  `comfyui_pulse_studio/pulse_audio.py`, tested in `tests/test_pulse_audio.py`.
+- `MANIFEST.in` ships the hand-off helper, and `pyproject.toml` lists
+  `audio_nodes`.
+
+Run live on a 15 s film: three stems of 15.08 s at 48 kHz / 24-bit, with
+loudness. The Fairlight project held the 4K picture and the stems, each 362
+frames, from the same frame. Separating music, effects, Foley and ambience out
+of H3's mix (Pulse Stem Separate) and generating Foley (Pulse Foley) are the next
+phase.
+
 ### Pika H3 Flex: `lcm` and a six-step recipe
 
 Pika H3 Flex samples six steps with a fresh noise draw between them, which is

@@ -339,7 +339,7 @@ class TestTheWarningIsActuallyWired(unittest.TestCase):
         # Pulse Infinity's four nodes are in infinity_nodes.py, and Pulse Resolve
         # Super Scale is in resolve_nodes.py, under the same rule.
         for path in (NODES_PY, NODES_PY.parent / "infinity_nodes.py",
-                     NODES_PY.parent / "resolve_nodes.py"):
+                     NODES_PY.parent / "resolve_nodes.py", NODES_PY.parent / "audio_nodes.py"):
             text = path.read_text(encoding="utf-8")
             declared = 0
             for node in ast.walk(ast.parse(text)):
@@ -352,7 +352,7 @@ class TestTheWarningIsActuallyWired(unittest.TestCase):
                 declared += 1
             counts[path.name] = declared
         self.assertEqual(counts, {"nodes.py": 11, "infinity_nodes.py": 4,
-                                  "resolve_nodes.py": 1})
+                                  "resolve_nodes.py": 2, "audio_nodes.py": 2})
         self.assertIn('HIDDEN_INPUTS = {"unique_id": "UNIQUE_ID"}', source)
         self.assertIn('HIDDEN_INPUTS_WITH_PROMPT = {"unique_id": "UNIQUE_ID", '
                       '"prompt": "PROMPT"}', source)

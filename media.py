@@ -747,6 +747,47 @@ def write_segment_audio(path, audio):
     return path
 
 
+#: WAV encodings by bit depth: (codec, the sample format it encodes from).
+_WAV_CODECS = {"16": ("pcm_s16le", "s16"), "24": ("pcm_s24le", "s32"),
+               "32f": ("pcm_f32le", "flt")}
+
+
+def write_wav(path, audio, sample_rate=48000, bit_depth="24"):
+    """Write AUDIO to `path` as a PCM WAV, the format every mix stage opens.
+
+    `bit_depth` is "16" or "24" (integer) or "32f" (float); the audio is resampled
+    to `sample_rate` first. Returns the path, or "" when there is nothing to write.
+    """
+    import av
+
+    if audio is None or audio["waveform"].shape[-1] == 0:
+        return ""
+    if str(bit_depth) not in _WAV_CODECS:
+        raise ValueError("bit_depth must be one of %s, got %r"
+                         % (", ".join(_WAV_CODECS), bit_depth))
+    codec, sample_format = _WAV_CODECS[str(bit_depth)]
+    sample_rate = int(sample_rate)
+    if int(audio["sample_rate"]) != sample_rate:
+        audio = resample_audio(audio, sample_rate)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    waveform = audio["waveform"][0].detach().to("cpu").float().contiguous()  # [C, N]
+    layout = {1: "mono", 2: "stereo", 6: "5.1"}.get(waveform.shape[0], "stereo")
+
+    with av.open(path, mode="w", format="wav") as container:
+        stream = container.add_stream(codec, rate=sample_rate)
+        stream.format = sample_format
+        stream.layout = layout
+        frame = av.AudioFrame.from_ndarray(
+            waveform.numpy().astype(np.float32), format="fltp", layout=layout)
+        frame.sample_rate = sample_rate
+        for packet in stream.encode(frame):
+            container.mux(packet)
+        for packet in stream.encode(None):
+            container.mux(packet)
+    _fsync_path(path)
+    return path
+
+
 def write_png(path, image):
     """Write a single IMAGE frame as PNG -- the `last_frame_carry` handoff (§7.4)."""
     from PIL import Image

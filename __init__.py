@@ -16,16 +16,22 @@ from .infinity_nodes import (  # noqa: E402
     NODE_CLASS_MAPPINGS as _INFINITY_CLASSES,
     NODE_DISPLAY_NAME_MAPPINGS as _INFINITY_NAMES,
 )
-# Pulse Resolve Super Scale, in its own module for the same reason.
+# Pulse Resolve Super Scale / Deliver, and Pulse Audio, in modules of their own
+# for the same reason.
 from .resolve_nodes import (  # noqa: E402
     NODE_CLASS_MAPPINGS as _RESOLVE_CLASSES,
     NODE_DISPLAY_NAME_MAPPINGS as _RESOLVE_NAMES,
+)
+from .audio_nodes import (  # noqa: E402
+    NODE_CLASS_MAPPINGS as _AUDIO_CLASSES,
+    NODE_DISPLAY_NAME_MAPPINGS as _AUDIO_NAMES,
 )
 
 NODE_CLASS_MAPPINGS = dict(NODE_CLASS_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS = dict(NODE_DISPLAY_NAME_MAPPINGS)
 for _classes, _names in ((_INFINITY_CLASSES, _INFINITY_NAMES),
-                         (_RESOLVE_CLASSES, _RESOLVE_NAMES)):
+                         (_RESOLVE_CLASSES, _RESOLVE_NAMES),
+                         (_AUDIO_CLASSES, _AUDIO_NAMES)):
     _clash = set(NODE_CLASS_MAPPINGS) & set(_classes)
     if _clash:  # pragma: no cover - a packaging mistake, caught at import
         raise ImportError("node ids defined twice: %s" % ", ".join(sorted(_clash)))

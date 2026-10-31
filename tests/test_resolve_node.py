@@ -98,8 +98,10 @@ class WhichFilmGoesToResolve(unittest.TestCase):
         self.assertEqual(bridge.delivery_canvas(1344, 768, "2160p"), (3840, 2160))
         self.assertEqual(bridge.delivery_canvas(768, 1344, "1440p"), (1440, 2560))
         self.assertEqual(bridge.delivery_canvas(992, 992, "2160p"), (2160, 2160))
+        self.assertEqual(bridge.delivery_canvas(1344, 768, "1080p"), (1920, 1080))
+        self.assertEqual(bridge.delivery_canvas(768, 1344, "1080p"), (1080, 1920))
         with self.assertRaises(ValueError):
-            bridge.delivery_canvas(1344, 768, "1080p")
+            bridge.delivery_canvas(1344, 768, "720p")
         with self.assertRaises(ValueError):
             bridge.delivery_canvas(0, 768, "2160p")
 
@@ -162,6 +164,12 @@ class UnfinishedFilms(unittest.TestCase):
         self.assertTrue(bridge.discard_unfinished(self.film, now - 60))
         self.assertTrue(os.path.exists(self.film))
 
+    def test_a_stamp_a_hair_before_the_render_began_is_still_this_renders(self):
+        # Windows stamps files from a coarser clock than time.time() reads.
+        since = self._write() + bridge.CLOCK_SLACK / 4
+        self.assertTrue(bridge.discard_unfinished(self.film, since))
+        self.assertFalse(os.path.exists(self.film))
+
     def test_nothing_there_is_nothing_left(self):
         self.assertTrue(bridge.discard_unfinished(self.film, 0))
 
@@ -196,8 +204,15 @@ class TheHelpersCommandLine(unittest.TestCase):
         self.assertEqual(argv[argv.index("--sharpness") + 1], "0.05")
         self.assertEqual(argv[argv.index("--nr") + 1], "1")
 
+    def test_every_size_switched_on_is_one_target(self):
+        argv = self._argv(targets=["1080p", "1440p", "2160p"])
+        self.assertEqual([argv[i + 1] for i, a in enumerate(argv) if a == "--target"],
+                         ["1080p", "1440p", "2160p"])
+        self.assertEqual([label for label, _ in bridge.TIERS], ["1080p", "2K", "4K"])
+        self.assertEqual([target for _, target in bridge.TIERS], list(bridge.TARGETS))
+
     def test_a_value_the_helper_would_refuse_is_refused_first(self):
-        for kwargs in ({"target": "1080p"}, {"mode": "8x"}, {"codec": "prores"},
+        for kwargs in ({"targets": ["720p"]}, {"targets": []}, {"mode": "8x"}, {"codec": "prores"},
                        {"sharpness": 1.5}, {"noise_reduction": -0.1}):
             with self.subTest(**kwargs), self.assertRaises(bridge.ResolveBridgeError):
                 self._argv(**kwargs)
@@ -213,23 +228,36 @@ class ReadingTheHelper(unittest.TestCase):
                      "D:\\run\\assembled_2160p_resolve.mp4", "  250%"):
             self.assertIsNone(bridge.parse_progress(line), line)
 
-    def test_success_is_the_last_line_when_this_run_wrote_it(self):
+    def test_success_names_each_file_this_run_wrote(self):
         out = ("DaVinci Resolve Studio 21.1.1.10\n"
-               "assembled.mp4: 1344x768 -> Super Scale 2x Enhanced -> 3840x2160\n"
-               "  100%\nD:\\run\\assembled_2160p_resolve.mp4\n")
+               "assembled.mp4: 1344x768 -> Super Scale 2x Enhanced -> 1920x1080, 3840x2160\n"
+               "  100%\n"
+               'PULSE_RESULT {"1080p": "D:\\\\run\\\\a_1080p_resolve.mp4", '
+               '"2160p": "D:\\\\run\\\\a_2160p_resolve.mp4"}\n'
+               "D:\\run\\a_1080p_resolve.mp4\nD:\\run\\a_2160p_resolve.mp4\n")
         self.assertEqual(bridge.parse_result(out, "", 0, lambda p: 200.0, since=100.0),
-                         "D:\\run\\assembled_2160p_resolve.mp4")
+                         {"1080p": "D:\\run\\a_1080p_resolve.mp4",
+                          "2160p": "D:\\run\\a_2160p_resolve.mp4"})
 
     def test_an_old_file_is_never_handed_on_as_the_new_one(self):
+        out = 'PULSE_RESULT {"2160p": "D:\\\\run\\\\a.mp4"}\n'
         with self.assertRaises(bridge.ResolveBridgeError) as caught:
-            bridge.parse_result("D:\\run\\a.mp4\n", "", 0, lambda p: 50.0, since=100.0)
+            bridge.parse_result(out, "", 0, lambda p: 50.0, since=100.0)
         self.assertIn("older than this run", str(caught.exception))
+
+    def test_a_stamp_within_the_clock_slack_is_this_runs(self):
+        out = 'PULSE_RESULT {"2160p": "D:\\\\run\\\\a.mp4"}\n'
+        stamp = 100.0 - bridge.CLOCK_SLACK / 4
+        self.assertEqual(bridge.parse_result(out, "", 0, lambda p: stamp, since=100.0),
+                         {"2160p": "D:\\run\\a.mp4"})
 
     def test_success_without_a_file_is_a_failure(self):
         with self.assertRaises(bridge.ResolveBridgeError):
-            bridge.parse_result("D:\\run\\a.mp4\n", "", 0, lambda p: None, since=100.0)
-        with self.assertRaises(bridge.ResolveBridgeError):
-            bridge.parse_result("", "", 0, lambda p: 200.0, since=100.0)
+            bridge.parse_result('PULSE_RESULT {"2160p": "D:\\\\run\\\\a.mp4"}\n', "", 0,
+                                lambda p: None, since=100.0)
+        for nothing in ("", "D:\\run\\a.mp4\n", "PULSE_RESULT {}\n", "PULSE_RESULT oops\n"):
+            with self.assertRaises(bridge.ResolveBridgeError):
+                bridge.parse_result(nothing, "", 0, lambda p: 200.0, since=100.0)
 
     def test_a_failure_is_told_in_the_helpers_words_with_the_nodes_widgets(self):
         err = ("resolve_superscale: Resolve has your project 'Client cut' open, and this "
@@ -296,15 +324,15 @@ class TheNode(unittest.TestCase):
     def test_the_progress_bar_is_never_touched_from_the_reader_thread(self):
         """ComfyUI's progress hook raises on a cancel and clears the interrupt flag;
         called from the reader thread, that would lose the cancel."""
-        execute = _function("execute", _node())
-        self.assertNotIn("update_absolute", _calls(_function("on_line", execute)))
-        self.assertIn("update_absolute", _calls(_function("should_cancel", execute)))
+        session = _function("_resolve_session")
+        self.assertNotIn("update_absolute", _calls(_function("heard", session)))
+        self.assertIn("update_absolute", _calls(_function("should_cancel", session)))
 
     def test_the_progress_hooks_interrupt_is_taken_as_a_cancel(self):
         """ComfyUI's InterruptProcessingException is a BaseException. Caught as an
         Exception it would escape, and the helper would be killed before it could
         stop Resolve's render and delete its project."""
-        should_cancel = _function("should_cancel", _function("execute", _node()))
+        should_cancel = _function("should_cancel", _function("_resolve_session"))
         handlers = [h for h in ast.walk(should_cancel) if isinstance(h, ast.ExceptHandler)]
         self.assertTrue(handlers)
         for handler in handlers:
@@ -317,7 +345,7 @@ class TheNode(unittest.TestCase):
 
     def _guarded(self):
         """The try in execute() that starts Resolve, and so has to see it out."""
-        execute = _function("execute", _node())
+        execute = _function("_resolve_session")
         guarded = [t for t in ast.walk(execute) if isinstance(t, ast.Try) and t.finalbody
                    and "_start_resolve" in _calls(ast.Module(body=t.body, type_ignores=[]))]
         self.assertEqual(len(guarded), 1)
@@ -328,7 +356,10 @@ class TheNode(unittest.TestCase):
         `finally` quits it, so no failure leaves a headless Resolve behind."""
         execute, guarded = self._guarded()
         body = ast.get_source_segment(SOURCE, execute)
-        self.assertLess(body.index("bridge.helper_argv("), body.index("_start_resolve("))
+        self.assertLess(body.index("make_argv("), body.index("_start_resolve("))
+        self.assertIn("bridge.helper_argv(",
+                      ast.get_source_segment(SOURCE, _function("make_argv",
+                                                               _function("_run_resolve"))))
         self.assertIn("spawn_detached", _calls(_function("_start_resolve")))
         self.assertIn("_see_resolve_out",
                       _calls(ast.Module(body=guarded.finalbody, type_ignores=[])))
@@ -347,8 +378,23 @@ class TheNode(unittest.TestCase):
     def test_an_unfinished_film_is_removed_once_the_run_is_over(self):
         """Resolve held a stopped render's file open until it quit (21.1.1, live)."""
         _, guarded = self._guarded()
+        self.assertIn("cleanup", _calls(ast.Module(body=guarded.finalbody, type_ignores=[])))
         self.assertIn("discard_unfinished",
-                      _calls(ast.Module(body=guarded.finalbody, type_ignores=[])))
+                      _calls(_function("cleanup", _function("_run_resolve"))))
+
+    def test_both_nodes_run_the_same_shared_code(self):
+        for name in ("PulseResolveSuperScale", "PulseResolveDeliver"):
+            cls = next(n for n in TREE.body if isinstance(n, ast.ClassDef) and n.name == name)
+            self.assertIn("_run_resolve", _calls(_function("execute", cls)), name)
+
+    def test_a_size_switched_off_sends_nothing_its_save_node_could_run_on(self):
+        """ComfyUI's ExecutionBlocker(None) stops a Save node silently: no error."""
+        cls = next(n for n in TREE.body
+                   if isinstance(n, ast.ClassDef) and n.name == "PulseResolveDeliver")
+        body = ast.get_source_segment(SOURCE, _function("execute", cls))
+        self.assertIn("ExecutionBlocker(None)", body)
+        self.assertIn("bridge.TIERS", body)
+        self.assertIn('"PulseResolveDeliver": "Pulse Resolve Deliver"', SOURCE)
 
     def test_memory_reclaim_is_asked_by_its_node_id_and_widget_values(self):
         """The ids and values a saved workflow holds, which that pack keeps stable."""

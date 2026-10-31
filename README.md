@@ -939,6 +939,7 @@ the top and bottom.
 | `1440p_exact`, `2160p_exact` | Pulse Render | A Lanczos resample. Fast, and adds no detail. |
 | `1080p_rtx`, `1440p_rtx`, `2160p_rtx` | Pulse Render | NVIDIA RTX Video Super Resolution (quality ULTRA) on the GPU, one frame at a time: a learned upscale that restores detail on the way up. |
 | [Pulse Resolve Super Scale](#pulse-resolve-super-scale) | DaVinci Resolve Studio, in the graph after Pulse Render | Resolve's Super Scale, 2× Enhanced, with Resolve's own resize for the rest of the way, rendered to H.265. As much fine detail as RTX and closer to the film it came from (measured below). |
+| [Pulse Resolve Deliver](#pulse-resolve-deliver) | DaVinci Resolve Studio, in the graph after Pulse Render | The same Super Scale at 1080p, 2K and 4K, each switched on or off, from one Resolve session. |
 | `tools/resolve_superscale.bat` | DaVinci Resolve Studio, by hand after the render | The same Super Scale, by drag and drop. |
 
 **RTX** needs an RTX card and `nvvfx`, which NVIDIA's RTX nodes for ComfyUI
@@ -949,18 +950,20 @@ why.
 **Resolve, by hand.** Drag a film, or a Pulse run folder, onto
 `tools/resolve_superscale.bat`; from a run folder it takes the native
 `assembled.mp4`, never an already-upscaled copy. Or run
-`resolve_superscale.bat <film or folder> --target 1440p`. It does five things:
+`resolve_superscale.bat <film or folder> --target 1440p`. `--target` takes
+`1080p`, `1440p` or `2160p` (the default), and repeats: `--target 1080p --target
+2160p` renders both from one Resolve session. It does five things:
 
 1. Starts Resolve headless (`-nogui`) if it isn't running, and quits it again
    afterwards.
-2. Builds a throwaway project with a timeline at the target canvas, input sizing
-   `scaleToCrop`.
+2. Builds a throwaway project with a timeline at the largest target's canvas,
+   input sizing `scaleToCrop`.
 3. Sets Super Scale on the clip. `auto` is 2× Enhanced (sharpness and noise
    reduction 0.5), with Resolve's own resize covering what is left — up to 1.5×,
    which takes every Pulse canvas to 1440p or 4K. A smaller film than that gets
    3× or 4×.
-4. Renders `<name>_<target>_resolve.mp4` beside the film, with Resolve's own
-   H.265 encoder and the film's audio.
+4. Renders each target as a render job of its own, `<name>_<target>_resolve.mp4`
+   beside the film, with Resolve's own H.265 encoder and the film's audio.
 5. Deletes the project.
 
 On an RTX 5090 a 30 s film went to 4K in 16 s once Resolve was up. Starting Resolve
@@ -1027,7 +1030,7 @@ When it runs, it:
 4. Quits a Resolve it started (`when_done`), so the GPU is free again before the
    next render. A Resolve you already had open is left as it is.
 
-The widgets are the helper's options: `target`, `mode`, `sharpness`,
+The widgets are the helper's options: `target` (`1080p`, `1440p` or `2160p`), `mode`, `sharpness`,
 `noise_reduction`, `codec`, and `open_project` (`stop`, or `switch_and_restore`
 for the helper's `--switch-project`).
 
@@ -1053,6 +1056,112 @@ for the helper's `--switch-project`).
 To free the GPU in the graph instead, put Memory Reclaim's *Advanced Model
 Unload* (All Models, Hard) on the `video` wire between Pulse Render and this
 node, and turn `free_vram` off.
+
+### Pulse Resolve Deliver
+
+Pulse Resolve Super Scale with three switches: `deliver_1080p`, `deliver_2k` and
+`deliver_4k` (only 4K is on by default). Every size switched on comes from one
+Resolve session, and each has an output of its own.
+
+```
+Pulse Render ──video──▶ Gate ──▶ Pulse Resolve Deliver ──video_1080p──▶ Save Video
+                                                        ──video_2k────▶ Save Video
+                                                        ──video_4k────▶ Save Video
+```
+
+- **One session.** Resolve starts once. The timeline is built at the largest size
+  switched on, with Super Scale chosen for it (`auto`: 2× Enhanced), and every
+  size is a render job of its own at its canvas: 1920×1080, 2560×1440 and
+  3840×2160, turned for a vertical film. The files land beside the film as
+  `assembled_1080p_resolve.mp4`, `assembled_1440p_resolve.mp4` and
+  `assembled_2160p_resolve.mp4`.
+- **A size switched off** sends ComfyUI's silent `ExecutionBlocker`, so its Save
+  node simply does not run: no error and no empty file. Everything wired after
+  that output is skipped the same way. All three switched off is an error that
+  names the switches.
+- **Outputs**: `video_1080p`, `video_2k`, `video_4k`, `paths` (one line per size)
+  and `report`.
+- Everything else is as on Pulse Resolve Super Scale: the GPU hand-off
+  (`free_vram`), the film it picks, `open_project`, `when_done`, Cancel, and
+  Windows with Resolve Studio.
+
+Run live on Resolve Studio 21.1.1: a 15 s film went to all three sizes in 57 s,
+starting and quitting Resolve included. The three files were 29.8, 40.6 and
+62.1 MB.
+
+### Pulse Audio Timeline · Pulse Audio Export
+
+A film's sound as separate tracks on the film clock. Two of them need no
+separation model, because Pulse placed them itself:
+
+- **The dialogue**: the lip-sync recordings, placed, trimmed and gated to their
+  shots exactly as Pulse Render lays them under the film
+  (`render.reference_audio_track`). It comes per character too, through the
+  owners the bin binds voices to.
+- **H3's own sound**: Pulse Render now keeps the track it joined across windows
+  beside the film, as `assembled_sound.flac`, before any recording replaces it.
+
+**Pulse Audio Timeline** takes the slate's `timeline` and returns the dialogue as
+one film-length `AUDIO`. That is everyone, or one character when `speaker` names
+them (`@Name`). It also returns `placements` (JSON: shot, speaker, voice, film
+in/out, source in/out) and a `report`. With `recordings` set to `final` it uses
+each Pulse Voice's clean take where one is connected, and with `drive` it uses the
+recordings that moved the mouths. It needs no render, so you can hear the dialogue
+and save it before the film exists.
+
+**Pulse Audio Export** takes the rendered film: Pulse Render's `video`, or a
+Resolve delivery of it. It writes `stems/` into the film's run folder:
+
+| file | what it is |
+|---|---|
+| `dialogue.wav`, `dialogue_<Name>.wav` | the recordings, with `timeline` wired; one file per character with `per_speaker` |
+| `h3_sound.wav` | H3's own track |
+| `music.wav`, `sfx.wav`, `foley.wav`, `ambience.wav` | whatever is wired into those sockets |
+| `mix.wav` | the film's own soundtrack |
+| `stems.json` | the film (fps, frames, seconds, canvas), its shots, every stem (role, source, rate, channels, seconds, LUFS, peak) and the placements |
+
+Every stem is cut or padded to the film's length, at `sample_rate` (48000 or
+44100) and `bit_depth` (24, 16 or 32f), so they line up in any mix stage. LUFS
+needs `pyloudnorm`; without it the peak is still written.
+
+`handoff` **resolve_fairlight** also builds a DaVinci Resolve project, through
+`tools/resolve_handoff.py` under Resolve's own Python and the same Resolve session
+handling as the Super Scale nodes:
+
+- the picture on V1: the largest Resolve delivery, else `assembled.mp4`;
+- each stem on an audio track of its own, named after it, from the first frame.
+
+The project is kept, ready to mix in Fairlight, and a name that is taken gets a
+number. `open_project` and `when_done` work as on the Resolve nodes.
+
+Run live on a 15 s film: dialogue, H3 sound and mix each came out at 15.08 s,
+48 kHz / 24-bit, with loudness. The Fairlight project held the 4K picture on V1
+and the three stems on A1–A3, 362 frames each, all starting on the same frame.
+
+**Next.** Pulse Stem Separate will take music, effects, Foley and ambience out of
+H3's mix, steered by the speech spans Pulse already knows (candidates: Mel-Band
+RoFormer for dialogue against the rest, SAM Audio for text-prompted stems). Pulse
+Foley will add synchronized effects from each shot's sound text, on the shot
+clock. Both will feed Export's sockets.
+
+#### A recording on a text-to-video film
+
+A T2V graph on the fl2va checkpoint, with a recording in its bin, can seem to
+"work with reference audio". Two things happen, and neither is fl2va taking a
+reference:
+
+1. A recording in the bin (continuity `none`) makes Pulse compile a **ref2va**
+   window: the reference prompt and the recording as `<Audio 1>`, sampled on the
+   one checkpoint wired, the fl2va weights, which were trained without
+   references.
+2. `use_reference_audio` then puts the recording into the finished film in
+   place of the audio H3 generated. It does that on any checkpoint, so what you
+   hear is the recording, whatever the model made of it.
+
+fl2va takes no references. What works on it is `lock_source` (Pulse Render's
+`audio_mode`) with a Pulse Voice on each speaking shot. The recording is written
+into the window's audio latent, and H3 animates the mouths to it. With
+`text_to_video` continuity, which keeps the bin empty, that is the route.
 
 ### Pulse Lip-Sync Segment / Pulse Lip-Sync Paste
 
